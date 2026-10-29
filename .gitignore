@@ -1,4 +1,7 @@
 .venv/
+# compose settings; .env.example is the committed template
+.env
+darkroom-output/
 __pycache__/
 *.pyc
 dist/
