@@ -25,15 +25,21 @@ dependencies = [
     "pydantic>=2.7",
     # ComfyUI returns the image over its websocket; stdlib has no client
     "websockets>=15",
+    # perceptual hash of every output, kept even when the pixels are not
+    "ImageHash>=4.3",
     "structlog>=24.0",
 ]
 
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.27"]
 cli = ["typer>=0.12", "rich>=13.0"]
+# MiVOLO age estimates through curator's face pipeline, in process. Also needs the ONNX file (`argus-curator
+# mivolo-convert`); without it the age check is skipped and /health says so.
+age = ["argus-curator[faces]>=0.8.1,<0.9"]
 # httpx2 backs starlette's TestClient: starlette >=1.3 deprecated the httpx path
 # and raises when neither client is installed, so testing the server needs it.
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "httpx2>=2.7"]
+# argus-curator (no faces) gives the tests curator's result models for a fake detect_faces
+dev = ["argus-curator>=0.8.1,<0.9", "pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "httpx2>=2.7"]
 
 [project.scripts]
 argus-darkroom = "argus_darkroom.cli:app"

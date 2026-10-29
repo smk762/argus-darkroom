@@ -137,7 +137,7 @@ class FakeComfyUI:
         self.url = f"http://127.0.0.1:{self._http.server_address[1]}"
         self.ws_url = f"ws://127.0.0.1:{self._ws.socket.getsockname()[1]}/ws"
         self._threads = [
-            threading.Thread(target=self._http.serve_forever, daemon=True),
+            threading.Thread(target=self._http.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True),
             threading.Thread(target=self._ws.serve_forever, daemon=True),
         ]
 
