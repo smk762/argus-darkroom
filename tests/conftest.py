@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 from fake_comfyui import FakeComfyUI  # noqa: E402
-from fakes import FakeNudeNet, FakeSingGuard  # noqa: E402
+from fakes import FakeNudeNet, FakeOllama, FakeSingGuard  # noqa: E402
 from rig import Rig  # noqa: E402
 
 
@@ -37,3 +37,9 @@ def rig(tmp_path, singguard, comfyui, nudenet, monkeypatch) -> Rig:
     r = Rig(tmp_path, singguard, comfyui, nudenet)
     monkeypatch.setattr(tempfile, "tempdir", str(r.systmp))
     return r
+
+
+@pytest.fixture
+def ollama() -> Iterator[FakeOllama]:
+    with FakeOllama() as fake:
+        yield fake

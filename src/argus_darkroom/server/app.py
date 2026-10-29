@@ -180,7 +180,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             result = await run_in_threadpool(engine.preflight, request)
         except RequestError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return result.payload() | {"final_prompt": engine.final_prompt(request)}
+        # Expansion is not run here: it is not deterministic, so a verdict on one expansion would say nothing about
+        # the one a generation makes. The generation judges its own final prompt, expansion included.
+        return result.payload() | {"final_prompt": engine.final_prompt(request), "expansion_applied": False}
 
     @app.post("/generate/stream")
     async def generate_stream(request: GenerateRequest) -> StreamingResponse:

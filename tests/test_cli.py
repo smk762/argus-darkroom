@@ -154,3 +154,20 @@ def test_serve_maps_its_flags_to_the_environment_and_binds_to_localhost(monkeypa
     settings = started["app"].state.engine.settings
     assert settings.allow_nsfw and settings.policy == "adult-granular"
     assert settings.output_root == tmp_path / "o" and settings.cors_origins == ("https://s.example",)
+
+
+def test_expand_flag_expands_the_prompt(monkeypatch, rig, ollama) -> None:
+    from dataclasses import replace
+
+    rig.settings = replace(rig.settings, ollama_url=ollama.url, ollama_model="tiny:1b")
+    use(monkeypatch, rig)
+    result = gen("--expand", "--lora", "style.safetensors")
+    assert result.exit_code == 0, result.output
+    assert len(ollama.requests) == 1
+    assert "a cat, soft light, detailed fur" in rig.comfyui.graphs[0]["6"]["inputs"]["text"]
+
+
+def test_expand_without_ollama_is_a_usage_error(monkeypatch, rig) -> None:
+    use(monkeypatch, rig)
+    result = gen("--expand", "--lora", "style.safetensors")
+    assert result.exit_code != 0 and "not configured" in result.output

@@ -100,6 +100,7 @@ def generate(
     width: int = Option(..., "--width"),
     height: int = Option(..., "--height"),
     clip_skip: int = Option(1, "--clip-skip"),
+    expand: bool = Option(False, "--expand", help="Expand the prompt with Ollama first (the expansion is checked too)"),
     negative: str = Option("", "--negative", "-n", help="Negative prompt: always part of the checks"),
     seed: int | None = Option(None, "--seed", help="Fixed seed (default: random, recorded)"),
     vae: str | None = Option(None, "--vae"),
@@ -118,6 +119,7 @@ def generate(
     request = GenerateRequest(
         user_prompt=prompt,
         negative_prompt=negative,
+        expand=expand,
         seed=seed,
         sampling={
             "sampler": sampler,
