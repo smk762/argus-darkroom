@@ -35,6 +35,7 @@ not be broken and where things are.
 | `age.py` | curator's `detect_faces`, behind the `[age]` extra |
 | `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
+| `demo/run.py`, `demo/smoke.py` | the real server and engine over the test fakes; a marker in the prompt picks the verdicts. Demo only: it turns `DEVMODE` on and uses fake models |
 | `server/app.py`, `cli.py`, `config.py`, `request.py` | HTTP, Typer, `ARGUS_DARKROOM_*`, the request model (`extra=forbid`) |
 
 ## Working
@@ -48,6 +49,11 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
   run lint, tests and `schema --check` locally before every PR.
 - Use `docker compose`, not `docker-compose`.
 - The record is a wire contract (`record_version`). Adding a field is fine; renaming or removing one is a new version.
+  The blur decision lives only in `guard.nudenet.blur`, which is recorded for every NSFW-policy image (`exposed_score`
+  is `null` when NudeNet was unreachable). Each LoRA records the `trigger_words` the request supplied.
+- argus-safelight codes against the HTTP shapes in the README's API table (`/health`, `/policies`, `/models`, `/records`
+  paging, SSE event bodies). Change one and `make demo` plus `make smoke` show whether the UI still works; update
+  safelight's `types.ts` in step.
 - Tests use fake servers on real sockets (`tests/fakes.py`, `tests/fake_comfyui.py`, `tests/rig.py`). Prefer extending
   them to mocking.
 - `scripts/preflight_eval.py` is run by hand against a real SingGuard that supports text-only checks (agent-composer
