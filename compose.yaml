@@ -1,0 +1,45 @@
+# Darkroom and its demo UI. ComfyUI, Ollama, SingGuard and NudeNet run elsewhere and are reached by URL (see .env.example).
+#
+#   cp .env.example .env   # then edit
+#   docker compose up --build
+#
+# Both ports are published on 127.0.0.1 only: darkroom is not for public hosting.
+
+services:
+  darkroom:
+    image: ghcr.io/smk762/argus-darkroom:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8106:8106"
+    environment:
+      ARGUS_DARKROOM_SINGGUARD_URL: ${SINGGUARD_URL:?set SINGGUARD_URL in .env - darkroom never runs unguarded}
+      ARGUS_DARKROOM_COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
+      ARGUS_DARKROOM_NUDENET_URL: ${NUDENET_URL:-}
+      ARGUS_DARKROOM_OLLAMA_URL: ${OLLAMA_URL:-}
+      ARGUS_DARKROOM_OLLAMA_MODEL: ${OLLAMA_MODEL:-}
+      ARGUS_DARKROOM_THINKING: ${THINKING:-cascade}
+      ARGUS_DARKROOM_ALLOW_NSFW: ${ALLOW_NSFW:-0}
+      ARGUS_DARKROOM_DEVMODE: ${DEVMODE:-0}
+      ARGUS_DARKROOM_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    volumes:
+      - darkroom-data:/data
+      - ${MODELS_ROOT:?set MODELS_ROOT in .env - the ComfyUI models folder}:/models:ro
+    extra_hosts:
+      # Reach services on the host (ComfyUI, SingGuard) the same way on Linux as on Docker Desktop.
+      - "host.docker.internal:host-gateway"
+
+  safelight:
+    build:
+      context: ${SAFELIGHT_CONTEXT:-../argus-safelight}
+      args:
+        NEXT_PUBLIC_DARKROOM_URL: ${DARKROOM_PUBLIC_URL:-http://localhost:8106}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      darkroom:
+        condition: service_healthy
+
+volumes:
+  darkroom-data:

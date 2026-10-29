@@ -1,0 +1,11 @@
+# .git stays: hatch-vcs derives the version from it.
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+darkroom-output/
+dist/
+build/

@@ -25,8 +25,26 @@ RUN apt-get update \
 # include .git (keep it out of .dockerignore for this image).
 COPY . .
 
-RUN uv pip install --system --no-cache "certifi>=2026.10.19" ".[server]"
+RUN uv pip install --system --no-cache "certifi>=2026.10.19" ".[server,cli]"
 
-EXPOSE 8000
-CMD ["uvicorn", "argus_darkroom.server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+# The age check (the `age` extra) pulls in onnxruntime and InsightFace and needs the MiVOLO model file, so it is left
+# out of the image; /health reports it as unavailable and records get `age: null`.
 
+ENV ARGUS_DARKROOM_OUTPUT_ROOT=/data \
+    ARGUS_DARKROOM_MODELS_ROOT=/models \
+    ARGUS_DARKROOM_WORKFLOW=/app/examples/workflows/sdxl.json
+
+# Records and images live in /data, so give the unprivileged user that and nothing else.
+RUN useradd --system --uid 10001 --no-create-home darkroom \
+    && mkdir /data \
+    && chown darkroom /data
+USER darkroom
+VOLUME /data
+
+# Bound to all interfaces so the port can be published; publish it on 127.0.0.1 (compose.yaml does). Darkroom is not
+# for public hosting. It refuses to start without ARGUS_DARKROOM_SINGGUARD_URL.
+EXPOSE 8106
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+    CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8106/health', timeout=4)"]
+ENTRYPOINT ["argus-darkroom"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8106"]
