@@ -168,7 +168,7 @@ def test_health_reports_expansion(rig, ollama) -> None:
     assert TestClient(create_app(rig.engine())).get("/health").json()["expansion_enabled"] is False
     with_ollama(rig, ollama)
     body = TestClient(create_app(rig.engine())).get("/health").json()
-    assert body["expansion_enabled"] is True and body["backends"]["ollama"] == {"configured": True, "up": True}
+    assert body["expansion_enabled"] is True and body["backends"]["ollama"] is True
 
 
 # --- over HTTP -----------------------------------------------------------------------------------------
@@ -180,7 +180,7 @@ def test_the_stream_expands_and_the_record_says_so(rig, ollama) -> None:
     c = TestClient(create_app(rig.engine()))
     events = stream_events(c, {"expand": True})
     assert events[0][1]["expanded_prompt"] == EXPANSION
-    assert events[-1][1]["request"]["expansion"]["model"] == "tiny:1b"
+    assert events[-1][1]["record"]["request"]["expansion"]["model"] == "tiny:1b"
 
 
 def test_the_stream_is_a_400_when_expansion_is_not_configured(rig) -> None:

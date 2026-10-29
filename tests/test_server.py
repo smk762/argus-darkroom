@@ -14,7 +14,9 @@ from fakes import safe_answer, unsafe_answer
 from rig import ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
+from argus_darkroom.comfyui import ComfyUIClient
 from argus_darkroom.config import ConfigError
+from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 
 BODY = {
@@ -51,7 +53,7 @@ def generate(c: TestClient, body: dict | None = None) -> dict:
     """Run one generation and return the record from the ``complete`` event."""
     events = stream_events(c, body)
     assert events[-1][0] == "complete"
-    return events[-1][1]
+    return events[-1][1]["record"]
 
 
 # --- start up and info ---------------------------------------------------------------------------------
@@ -65,31 +67,33 @@ def test_an_empty_singguard_url_stops_the_server_starting(monkeypatch) -> None:
 
 def test_health(rig) -> None:
     body = client(rig).get("/health").json()
-    assert body["backends"] == {
-        "comfyui": {"configured": True, "up": True},
-        "singguard": {"configured": True, "up": True},
-        "nudenet": {"configured": True, "up": True},
-        "ollama": {"configured": False, "up": False},
-    }
+    # configured and answering; an unconfigured Ollama is simply not up. `age` is whether the age check can run.
+    assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": True, "ollama": False, "age": False}
+    assert body["default_policy"] == "default" and body["thinking"] == "cascade" and body["generating"] is False
     assert body["nsfw_allowed"] is False and body["devmode"] is False and body["sfw_available"] is True
     assert body["policies"] == ["default", "adult", "adult-granular", "adult-cautious"]
-    assert body["age"]["available"] is False and body["age"]["reason"]
+    assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
 
 
 def test_health_says_what_is_down(rig) -> None:
     body = client(rig, nudenet_url="http://127.0.0.1:1", comfyui_url="http://127.0.0.1:1").get("/health").json()
-    assert body["backends"]["nudenet"] == {"configured": True, "up": False}
-    assert body["backends"]["comfyui"]["up"] is False
+    assert body["backends"]["nudenet"] is False and body["backends"]["comfyui"] is False
+    assert body["backends"]["singguard"] is True
 
 
-def test_policies_mark_nsfw_as_advisory_only_without_the_flag(rig) -> None:
+def test_policies_mark_nsfw_as_not_enforceable_without_the_flag(rig) -> None:
     body = client(rig).get("/policies").json()
     by_name = {p["name"]: p for p in body["policies"]}
     assert body["default"] == "default"
-    assert by_name["default"]["mode"] == "sfw" and not by_name["default"]["advisory_only"]
-    assert by_name["adult-granular"]["advisory_only"] is True
-    assert by_name["adult-granular"]["illegal_rules"] == ["A", "H", "I"]
+    assert by_name["default"]["mode"] == "sfw" and by_name["default"]["enforceable"] is True
+    assert by_name["adult-granular"]["enforceable"] is False
+    assert by_name["adult-granular"]["illegal_rules"] == [
+        {"code": "A", "name": "Minors"},
+        {"code": "H", "name": "Non-Consensual Sexual Content"},
+        {"code": "I", "name": "Sexual Violence & Extreme Content"},
+    ]
+    assert all(p["summary"] for p in body["policies"])
     assert by_name["default"]["illegal_rules"] == [] and by_name["default"]["text"] is None
     assert "Minors" in by_name["adult-granular"]["text"]
 
@@ -97,15 +101,24 @@ def test_policies_mark_nsfw_as_advisory_only_without_the_flag(rig) -> None:
 def test_policies_with_the_flag(rig) -> None:
     body = client(rig, allow_nsfw=True, policy="adult-granular").get("/policies").json()
     assert body["default"] == "adult-granular"
-    assert not any(p["advisory_only"] for p in body["policies"])
+    assert all(p["enforceable"] for p in body["policies"])
 
 
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
-        "checkpoints": ["base.safetensors"],
-        "loras": ["style.safetensors"],
+        "checkpoints": [{"name": "base.safetensors"}],
+        "loras": [{"name": "style.safetensors"}],
         "vaes": [],
+        "samplers": ["euler", "dpmpp_2m"],  # what ComfyUI's KSampler accepts
+        "schedulers": ["normal", "karras"],
     }
+
+
+def test_models_without_comfyui_still_lists_the_files(rig) -> None:
+    c = client(rig)
+    c.app.state.engine.comfyui = ComfyUIClient("http://127.0.0.1:1", timeout=1)
+    body = c.get("/models").json()
+    assert body["checkpoints"] == [{"name": "base.safetensors"}] and body["samplers"] == [] == body["schedulers"]
 
 
 # --- pre-flight ----------------------------------------------------------------------------------------
@@ -114,8 +127,10 @@ def test_models(rig) -> None:
 def test_preflight_alone(rig) -> None:
     c = client(rig)
     body = c.post("/preflight", json=BODY).json()
-    assert body["verdict"] == "proceed" and body["final_prompt"] == "a cat, sks"
-    assert body["cells"]["default"]["state"] == "safe"
+    assert body["outcome"] == "ok" and body["final_prompt"] == "a cat, sks" and body["refusal"] is None
+    assert body["results"]["default"]["state"] == "safe"
+    assert (body["mode"], body["enforcing_policy"], body["thinking"]) == ("sfw", "default", "cascade")
+    assert body["framed_text"] == frame("a cat, sks", "blurry") and body["warnings"] == []
     assert not [r for r in rig.singguard.requests if is_image_scan(r)]
     assert list(rig.out.glob("*.json")) == [] and rig.comfyui.calls == []  # a form check is not an attempt
 
@@ -125,8 +140,14 @@ def test_preflight_refusal_names_the_rule_and_why(rig) -> None:
         preflight=unsafe_answer("B. Real-World Crimes & Public Safety", explanation="why")
     )
     body = client(rig).post("/preflight", json=BODY).json()
-    assert (body["verdict"], body["reason"]) == ("refused", "default:B")
-    assert body["cells"]["default"]["result"]["explanation"] == "why"
+    assert body["outcome"] == "refused"
+    assert body["refusal"] == {
+        "policy": "default",
+        "reason": "B",
+        "rule": "B. Real-World Crimes & Public Safety",
+        "explanation": "why",
+    }
+    assert body["results"]["default"]["result"]["explanation"] == "why"
 
 
 def test_a_request_cannot_carry_policy_text(rig) -> None:
@@ -151,13 +172,14 @@ def test_the_stream_carries_every_step_and_the_record(rig) -> None:
     events = stream_events(c)
     kinds = [k for k, _ in events]
     assert kinds == ["preflight", "queued", "progress", "progress", "scan", "scan", "complete"]
-    assert events[0][1]["verdict"] == "proceed"
+    assert events[0][1]["outcome"] == "ok" and events[0][1]["results"]["default"]["state"] == "safe"
+    assert events[2][1] == {"step": 1, "total": 2}
     assert events[-3][1] == {
         "policy": "default",
         "context": "isolated",
         "cell": {"state": "safe", "result": events[-3][1]["cell"]["result"], "error": None},
     }
-    record = events[-1][1]
+    record = events[-1][1]["record"]
     assert record["outcome"] == "passed"
     assert c.get(f"/record/{record['id']}").json() == record
     image = c.get(f"/image/{record['id']}")
@@ -169,7 +191,8 @@ def test_a_refusal_streams_preflight_and_complete_only(rig) -> None:
     rig.singguard.responder = answers(preflight=unsafe_answer("B. Real-World Crimes & Public Safety"))
     events = stream_events(client(rig))
     assert [k for k, _ in events] == ["preflight", "complete"]
-    assert events[-1][1]["outcome"] == "refused"
+    assert events[-1][1]["record"]["outcome"] == "refused"
+    assert events[0][1]["refusal"]["reason"] == "B"
     assert rig.comfyui.calls == []
 
 
@@ -194,7 +217,7 @@ def test_a_second_generation_gets_a_409(rig) -> None:
     try:
         r = c.post("/generate/stream", json=BODY)
         assert r.status_code == 409
-        assert c.get("/health").json()["busy"] is True
+        assert c.get("/health").json()["generating"] is True
     finally:
         c.app.state.busy.release()
     assert generate(c)["outcome"] == "passed"
@@ -218,13 +241,13 @@ def test_one_at_a_time_for_real(tmp_path, singguard, nudenet) -> None:
         t = threading.Thread(target=lambda: first.append(stream_events(c)))
         t.start()
         for _ in range(100):
-            if c.get("/health").json()["busy"]:
+            if c.get("/health").json()["generating"]:
                 break
             threading.Event().wait(0.05)
         assert c.post("/generate/stream", json=BODY).status_code == 409
         release.set()
         t.join(10)
-        assert first[0][-1][1]["outcome"] == "passed"
+        assert first[0][-1][1]["record"]["outcome"] == "passed"
         assert generate(c)["outcome"] == "passed"
 
 
@@ -284,13 +307,17 @@ def test_records_are_paged_and_filtered(rig) -> None:
     rig.singguard.responder = answers(preflight=unsafe_answer("B. Real-World Crimes & Public Safety"))
     refused = generate(c)["id"]
     page = c.get("/records").json()
-    assert (page["total"], page["offset"], page["limit"]) == (4, 0, 50)
+    assert (page["total"], page["page"], page["page_size"]) == (4, 1, 50)
     assert page["records"][0]["id"] == refused  # newest first
     assert [r["id"] for r in c.get("/records", params={"outcome": "passed"}).json()["records"]] == ids[::-1]
-    two = c.get("/records", params={"limit": 2, "offset": 1}).json()
-    assert two["total"] == 4 and len(two["records"]) == 2
+    two = c.get("/records", params={"page_size": 2, "page": 2}).json()
+    assert two["total"] == 4 and [r["id"] for r in two["records"]] == [r["id"] for r in page["records"][2:]]
+    assert c.get("/records", params={"mode": "sfw"}).json()["total"] == 4
+    assert c.get("/records", params={"mode": "nsfw"}).json()["total"] == 0
+    assert c.get("/records", params={"mode": "both"}).status_code == 422
+    assert c.get("/records", params={"page": 0}).status_code == 422
     assert c.get("/records", params={"outcome": "nonsense"}).status_code == 422
-    assert c.get("/records", params={"limit": 10_000}).status_code == 422
+    assert c.get("/records", params={"page_size": 10_000}).status_code == 422
 
 
 def test_the_user_can_remove_their_own_output_and_the_record_stays(rig) -> None:
@@ -389,7 +416,7 @@ def test_purge_leaves_a_clean_slate_and_an_archive_taken_before_holds_everything
     assert list(rig.out.iterdir()) == []
     assert c.get("/records").json()["total"] == 0
     assert set(rig.comfyui.history) == {"other"}  # ours cleared, theirs untouched
-    assert c.get("/health").json()["busy"] is False
+    assert c.get("/health").json()["generating"] is False
 
 
 def test_purge_still_clears_local_data_when_comfyui_is_down(rig) -> None:

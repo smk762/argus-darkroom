@@ -91,7 +91,15 @@ class FakeComfyUI:
                     if cls in fake.unknown_nodes:
                         self._send(200, {})
                     else:
-                        self._send(200, {cls: {"output_node": cls in fake.output_nodes}})
+                        entry = {"output_node": cls in fake.output_nodes}
+                        if cls == "KSampler":
+                            entry["input"] = {
+                                "required": {
+                                    "sampler_name": [["euler", "dpmpp_2m"]],
+                                    "scheduler": [["normal", "karras"]],
+                                }
+                            }
+                        self._send(200, {cls: entry})
                 else:
                     self._send(404, {})
 

@@ -43,6 +43,8 @@ class ModelRef(BaseModel):
 
 class LoRARef(ModelRef):
     weight: float = 1.0
+    # The words the request supplied for this LoRA (already in final_prompt), kept so a record can refill a form.
+    trigger_words: list[str] = Field(default_factory=list)
 
 
 class SamplingParams(BaseModel):
@@ -99,10 +101,15 @@ class ScanCells(BaseModel):
 
 
 class NudeNetRecord(BaseModel):
-    exposed_score: float
+    """What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not
+    configured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it."""
+
+    exposed_score: float | None
     labels: dict[str, float] = Field(default_factory=dict)
     # The user's ``nsfw_threshold`` (blur). The SFW gate is a fixed 0.2 and ignores it.
     threshold: float
+    # Whether safelight blurs the image until the user reveals it. True under an NSFW policy when NudeNet scores it at
+    # or above the threshold, or did not answer. Always false under an SFW policy.
     blur: bool
 
 
@@ -141,9 +148,6 @@ class ImageRecord(BaseModel):
     # Set only when the image is passed or review (the only outcomes that write it): the file name under the
     # output root.
     path: str | None = None
-    # Whether safelight blurs it until the user reveals it. True under an NSFW policy when NudeNet scores it at or
-    # above the request's threshold, or did not answer. Always false under an SFW policy.
-    blur: bool = False
 
 
 class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]

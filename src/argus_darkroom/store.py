@@ -10,6 +10,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from argus_darkroom.models import GenerationRecord, Outcome
 
@@ -73,7 +74,11 @@ class RecordStore:
             return None
 
     def page(
-        self, outcome: Outcome | None = None, offset: int = 0, limit: int = 50
+        self,
+        outcome: Outcome | None = None,
+        mode: Literal["sfw", "nsfw"] | None = None,
+        offset: int = 0,
+        limit: int = 50,
     ) -> tuple[list[GenerationRecord], int]:
         """One page of records, newest first, and the total that matched. Skips unreadable files."""
         records: list[GenerationRecord] = []
@@ -84,7 +89,7 @@ class RecordStore:
                 record = GenerationRecord.model_validate_json(path.read_text(encoding="utf-8"))
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
-            if outcome is None or record.outcome == outcome:
+            if (outcome is None or record.outcome == outcome) and (mode is None or record.request.mode == mode):
                 records.append(record)
         records.sort(key=lambda r: r.created_at, reverse=True)
         return records[offset : offset + limit], len(records)

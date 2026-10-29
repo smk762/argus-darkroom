@@ -64,14 +64,14 @@ def test_preflight_prints_the_verdict(monkeypatch, rig) -> None:
     result = runner.invoke(app, ["preflight", "a cat", "-n", "blurry", "--trigger-word", "sks"])
     assert result.exit_code == 0
     body = json.loads(result.stdout)
-    assert body["verdict"] == "proceed" and body["final_prompt"] == "a cat, sks"
+    assert body["outcome"] == "ok" and body["final_prompt"] == "a cat, sks"
 
 
 def test_preflight_exits_2_when_refused(monkeypatch, rig) -> None:
     rig.singguard.responder = answers(preflight=unsafe_answer("B. Real-World Crimes & Public Safety"))
     use(monkeypatch, rig)
     result = runner.invoke(app, ["preflight", "a cat"])
-    assert result.exit_code == 2 and json.loads(result.stdout)["reason"] == "default:B"
+    assert result.exit_code == 2 and json.loads(result.stdout)["refusal"]["reason"] == "B"
 
 
 def test_preflight_rejects_an_nsfw_policy_without_the_flag(monkeypatch, rig) -> None:
@@ -87,7 +87,7 @@ def test_generate_releases_an_image_and_says_where(monkeypatch, rig) -> None:
     assert "outcome  passed" in result.stdout
     (png,) = rig.out.glob("*.png")
     assert str(png) in result.stdout and png.read_bytes() == rig.comfyui.png
-    assert "step 2/2" in result.stderr and "pre-flight: proceed" in result.stderr
+    assert "step 2/2" in result.stderr and "pre-flight: ok" in result.stderr
 
 
 def test_generate_json_is_the_whole_record(monkeypatch, rig) -> None:

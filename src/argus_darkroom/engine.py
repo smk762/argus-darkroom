@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
-from argus_cortex.moderation import NudeNetClient
+from argus_cortex.moderation import NudeNetClient, rule_letter
 from argus_cortex.moderation import policies as policy_table
 
 from argus_darkroom import __version__
@@ -134,6 +134,46 @@ class Engine:
             request.thinking,
         )
 
+    def preflight_view(
+        self, request: GenerateRequest, pre: PreflightResult, expanded_prompt: str | None = None
+    ) -> dict:
+        """*pre* as a client shows it (``/preflight`` and the ``preflight`` event): the prompts that were judged, an
+        ``outcome`` of ``ok``, ``warning`` or ``refused``, and the cell for every policy under ``results``.
+
+        A ``warning`` is the enforcing policy flagging under an NSFW policy: generation proceeds and the output
+        scan decides. An advisory flag is only a cell in ``results``.
+        """
+        enforcing, advisory = self.policies(request)
+        refusal, warnings = None, []
+        if pre.refused and pre.refusing_policy is not None:
+            cell = pre.cells[pre.refusing_policy]
+            rules = cell.result.rules if cell.result is not None else []
+            refusal = {
+                "policy": pre.refusing_policy,
+                "reason": rule_letter(rules[0]).removesuffix(".") if rules else "unchecked",
+                "rule": rules[0] if rules else None,
+                "explanation": (cell.result.explanation if cell.result is not None else cell.error),
+            }
+        elif pre.cells[enforcing].state == "flagged" and pre.cells[enforcing].result is not None:
+            result = pre.cells[enforcing].result
+            rule = result.rules[0] if result.rules else None
+            warnings.append({"policy": enforcing, "rule": rule, "explanation": result.explanation})
+        return {
+            "mode": policy_table.mode(enforcing),
+            "enforcing_policy": enforcing,
+            "advisory_policies": advisory,
+            "thinking": request.thinking or self.settings.thinking,
+            "user_prompt": request.user_prompt,
+            "expanded_prompt": expanded_prompt,
+            "final_prompt": self.final_prompt(request, expanded_prompt),
+            "negative_prompt": request.negative_prompt,
+            "framed_text": pre.framed,
+            "outcome": "refused" if refusal else "warning" if warnings else "ok",
+            "refusal": refusal,
+            "warnings": warnings,
+            "results": {name: cell.model_dump(mode="json") for name, cell in pre.cells.items()},
+        }
+
     def _request_record(
         self,
         request: GenerateRequest,
@@ -203,7 +243,7 @@ class Engine:
             seed=request.seed if request.seed is not None else secrets.randbits(32),
             checkpoint=self.models.ref("checkpoint", request.checkpoint),
             vae=self.models.ref("vae", request.vae) if request.vae else None,
-            loras=tuple(self.models.lora_ref(lora.name, lora.weight) for lora in request.loras),
+            loras=tuple(self.models.lora_ref(lora.name, lora.weight, lora.trigger_words) for lora in request.loras),
         )
         try:  # the template's LoRA and VAE slots must fit this request: better a 400 now than a failure later
             render(self.workflow, self._params(request, prepared, ""))
@@ -348,17 +388,14 @@ class Engine:
                         guard=GuardRecord(enforcing_policy=enforcing, advisory_policies=advisory, thinking=thinking),
                     )
                 )
-                send("complete", record.model_dump(mode="json"))
+                send("complete", {"record": record.model_dump(mode="json")})
                 return record
 
         pre = self.preflight(request, expanded)
-        send(
-            "preflight",
-            pre.payload() | {"final_prompt": self.final_prompt(request, expanded), "expanded_prompt": expanded},
-        )
+        send("preflight", self.preflight_view(request, pre, expanded))
         if pre.refused:
             record = self.record_refusal(request, pre, expanded)
-            send("complete", record.model_dump(mode="json"))
+            send("complete", {"record": record.model_dump(mode="json")})
             return record
 
         guard_record = GuardRecord(
@@ -369,7 +406,7 @@ class Engine:
             rendered = self.render(
                 request,
                 expanded,
-                lambda step, of: send("progress", {"step": step, "of": of}),
+                lambda step, total: send("progress", {"step": step, "total": total}),
                 prepared,
             )
             image = describe(rendered.image)
@@ -384,7 +421,7 @@ class Engine:
                     guard=guard_record,
                 )
             )
-            send("complete", record.model_dump(mode="json"))
+            send("complete", {"record": record.model_dump(mode="json")})
             return record
 
         # From here the bytes exist only in `rendered.image`. Nothing is written until the verdict.
@@ -405,14 +442,12 @@ class Engine:
 
         guard_record.scans = scan.scans
         guard_record.age = age
-        if scan.nsfw is not None:
-            guard_record.nudenet = NudeNetRecord(
-                exposed_score=scan.nsfw.exposed_score,
-                labels=scan.nsfw.labels,
-                threshold=request.nsfw_threshold,
-                blur=decision.blur,
-            )
-        image.blur = decision.blur
+        guard_record.nudenet = NudeNetRecord(
+            exposed_score=scan.nsfw.exposed_score if scan.nsfw is not None else None,
+            labels=scan.nsfw.labels if scan.nsfw is not None else {},
+            threshold=request.nsfw_threshold,
+            blur=decision.blur,
+        )
         record = GenerationRecord(
             id=record_id,
             darkroom_version=__version__,
@@ -427,7 +462,7 @@ class Engine:
             record = self._release(record, rendered.image)
         else:
             self.store.save(record)  # a deleted or omitted image is never written: this is all that is kept
-        send("complete", record.model_dump(mode="json"))
+        send("complete", {"record": record.model_dump(mode="json")})
         return record
 
     def _save(self, record: GenerationRecord) -> GenerationRecord:

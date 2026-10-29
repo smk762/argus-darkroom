@@ -38,8 +38,13 @@ class ModelLibrary:
     def ref(self, kind: Kind, name: str) -> ModelRef:
         return ModelRef(name=name, sha256=sha256_cached(self.path(kind, name)))
 
-    def lora_ref(self, name: str, weight: float) -> LoRARef:
-        return LoRARef(name=name, sha256=sha256_cached(self.path("lora", name)), weight=weight)
+    def lora_ref(self, name: str, weight: float, trigger_words: list[str] | None = None) -> LoRARef:
+        return LoRARef(
+            name=name,
+            sha256=sha256_cached(self.path("lora", name)),
+            weight=weight,
+            trigger_words=list(trigger_words or []),
+        )
 
     def names(self, kind: Kind) -> list[str]:
         """The model names found for *kind*, sorted. Empty when the folder is missing."""

@@ -339,11 +339,6 @@
     "ImageRecord": {
       "description": "The identity of the output. The hashes are kept even when the pixels are not.",
       "properties": {
-        "blur": {
-          "default": false,
-          "title": "Blur",
-          "type": "boolean"
-        },
         "height": {
           "exclusiveMinimum": 0,
           "title": "Height",
@@ -398,6 +393,13 @@
           "title": "Sha256",
           "type": "string"
         },
+        "trigger_words": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trigger Words",
+          "type": "array"
+        },
         "weight": {
           "default": 1.0,
           "title": "Weight",
@@ -433,14 +435,22 @@
       "type": "object"
     },
     "NudeNetRecord": {
+      "description": "What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not\nconfigured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it.",
       "properties": {
         "blur": {
           "title": "Blur",
           "type": "boolean"
         },
         "exposed_score": {
-          "title": "Exposed Score",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exposed Score"
         },
         "labels": {
           "additionalProperties": {
