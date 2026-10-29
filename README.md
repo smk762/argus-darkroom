@@ -142,17 +142,54 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, which backends answer, `nsfw_allowed`, `sfw_available`, `devmode`, age-check status |
-| `GET /policies`, `GET /models` | policy names, their modes and illegal rules; checkpoints and LoRAs |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, age-check status |
+| `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
+| `GET /models` | checkpoints and LoRAs as `{name}` objects, plus the samplers and schedulers ComfyUI offers |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
-| `POST /generate/stream` | SSE: `preflight`, `queued`, `progress`, `scan`, `complete`. One at a time; a second gets 409 |
-| `GET /records`, `GET /record/{id}` | paged, filterable by outcome |
+| `POST /generate/stream` | SSE: `preflight`, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
+| `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image; the record stays |
 | `GET /archive` | streamed zip of every record and stored image |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
+
+Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`);
+`blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet could not be reached, and the
+image is then blurred. Each LoRA in `params.loras` keeps the `trigger_words` the request supplied.
+
+## Demo (no GPU)
+
+`demo/run.py` runs the real server and engine against the same fake SingGuard, NudeNet, ComfyUI and Ollama servers the
+tests use, so a reviewer can click through every outcome. A marker in the prompt chooses what the fakes say:
+
+```bash
+make demo          # http://127.0.0.1:8106, history in ./demo-data
+make smoke         # in another shell: 16 prompts, each checked against the outcome it should reach
+```
+
+| Marker | Fakes say | Outcome |
+|---|---|---|
+| none | everything safe | `passed` |
+| `[flag]` / `[flag-both]` | the image (or image and prompt) trips rule B | `review` |
+| `[unchecked]` | the scan cannot be read | `deleted` (`unchecked`) |
+| `[exposed]` | NudeNet reports exposure | SFW: `omitted`; NSFW: `passed`, blurred |
+| `[nonude]` | NudeNet is down | SFW: `omitted`; NSFW: `passed`, blurred |
+| `[noage]` | MiVOLO has no estimate | `passed` |
+| `[minor]` | exposure and an age under 18 | `deleted` (`minor-exposed`) |
+| `[illegal]` | the illegal rule fires | `deleted` |
+| `[refuse]`, `[refuse-illegal]` | pre-flight flags | `refused` |
+| `[preflight-unchecked]` | pre-flight cannot be read | `refused` (`unchecked`) |
+| `[fail]` | ComfyUI errors in `KSampler` | `failed` |
+
+`python demo/run.py --help` lists `--host`, `--port`, `--cors-origin`, `--workflow` (use `sdxl_lora.json` to try LoRAs;
+the default `sdxl.json` has no LoRA slot, so a request with one is a 400), `--latency`, `--step-delay` and `--fresh`.
+The demo turns `DEVMODE` and `ALLOW_NSFW` on and uses fake models. Bind it to a non-loopback host only on a network you
+trust. No real content is involved; the verdicts are canned.
+
+[argus-safelight](https://github.com/smk762/argus-safelight) is the UI for it: point `NEXT_PUBLIC_DARKROOM_URL` at the
+demo.
 
 ## Age check (optional)
 
