@@ -400,3 +400,10 @@ def test_a_listener_that_raises_does_not_cost_the_record(rig) -> None:
     record = eng.generate(rig.request(), hung_up)
     assert record.outcome == "passed"
     assert eng.store.load(record.id) == record
+
+
+def test_the_record_keeps_each_loras_trigger_words(rig) -> None:
+    """So a form can be refilled from a record and rebuild the same final prompt."""
+    record = rig.generate(rig.engine())
+    assert [lora.trigger_words for lora in record.request.loras] == [["sks"]]
+    assert record.request.final_prompt == "a cat, sks"

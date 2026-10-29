@@ -393,6 +393,13 @@
           "title": "Sha256",
           "type": "string"
         },
+        "trigger_words": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trigger Words",
+          "type": "array"
+        },
         "weight": {
           "default": 1.0,
           "title": "Weight",

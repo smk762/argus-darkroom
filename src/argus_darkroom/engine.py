@@ -243,7 +243,7 @@ class Engine:
             seed=request.seed if request.seed is not None else secrets.randbits(32),
             checkpoint=self.models.ref("checkpoint", request.checkpoint),
             vae=self.models.ref("vae", request.vae) if request.vae else None,
-            loras=tuple(self.models.lora_ref(lora.name, lora.weight) for lora in request.loras),
+            loras=tuple(self.models.lora_ref(lora.name, lora.weight, lora.trigger_words) for lora in request.loras),
         )
         try:  # the template's LoRA and VAE slots must fit this request: better a 400 now than a failure later
             render(self.workflow, self._params(request, prepared, ""))

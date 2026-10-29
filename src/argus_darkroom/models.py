@@ -43,6 +43,8 @@ class ModelRef(BaseModel):
 
 class LoRARef(ModelRef):
     weight: float = 1.0
+    # The words the request supplied for this LoRA (already in final_prompt), kept so a record can refill a form.
+    trigger_words: list[str] = Field(default_factory=list)
 
 
 class SamplingParams(BaseModel):
