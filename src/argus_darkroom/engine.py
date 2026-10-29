@@ -20,6 +20,7 @@ from argus_darkroom import __version__
 from argus_darkroom.age import AgeEstimator, AgeStatus, default_estimator
 from argus_darkroom.comfyui import ComfyUIClient, GenerationError, Progress
 from argus_darkroom.config import Settings
+from argus_darkroom.expansion import ExpansionError, OllamaExpander
 from argus_darkroom.guard import Guard
 from argus_darkroom.images import UnreadableImage, describe
 from argus_darkroom.modelfiles import ModelLibrary
@@ -76,6 +77,7 @@ class Engine:
         models: ModelLibrary | None = None,
         nudenet: NudeNetClient | None = None,
         age: AgeEstimator | None = None,
+        expander: OllamaExpander | None = None,
     ) -> None:
         self.settings = settings
         self.guard = guard or Guard(settings.singguard_url, settings.thinking)
@@ -92,6 +94,9 @@ class Engine:
         else:
             self.age_status = AgeStatus(True)
         self.scanner = Scanner(self.guard, nudenet, age)
+        if expander is None and settings.expansion_enabled:
+            expander = OllamaExpander(settings.ollama_url, settings.ollama_model)
+        self.expander = expander
 
     # -- request ----------------------------------------------------------------------------------------
 
@@ -146,6 +151,7 @@ class Engine:
             mode=policy_table.mode(enforcing),
             user_prompt=request.user_prompt,
             expanded_prompt=expanded_prompt,
+            expansion=self.expander.info if expanded_prompt is not None and self.expander else None,
             final_prompt=self.final_prompt(request, expanded_prompt),
             negative_prompt=request.negative_prompt,
             seed=seed if seed is not None else request.seed,
@@ -306,6 +312,8 @@ class Engine:
         model, sampling or checkpoint, or a workflow whose LoRA and VAE slots do not match the request.
         """
         self.policies(request)
+        if request.expand and self.expander is None:
+            raise RequestError("prompt expansion is not configured (ARGUS_DARKROOM_OLLAMA_URL and _OLLAMA_MODEL)")
         prepared = self.prepare(request)
         return lambda emit=None: self._run(request, prepared, emit)
 
@@ -320,22 +328,49 @@ class Engine:
 
         enforcing, advisory = self.policies(request)
         thinking = request.thinking or self.settings.thinking
+        record_id = new_id()
 
-        pre = self.preflight(request)
-        send("preflight", pre.payload() | {"final_prompt": self.final_prompt(request)})
+        # Expansion comes first, so that pre-flight judges the final prompt: the expansion, not only what the
+        # user typed. A failed expansion is a failed attempt, never a silent fall back to the plain prompt.
+        expanded: str | None = None
+        if request.expand:
+            assert self.expander is not None  # begin() checked
+            try:
+                expanded = self.expander.expand(request.user_prompt)
+            except ExpansionError as exc:
+                record = self._save(
+                    GenerationRecord(
+                        id=record_id,
+                        darkroom_version=__version__,
+                        outcome="failed",
+                        outcome_reason=f"expansion failed: {exc}"[:_REASON_MAX],
+                        request=self._prepared_record(request, enforcing, None, prepared),
+                        guard=GuardRecord(enforcing_policy=enforcing, advisory_policies=advisory, thinking=thinking),
+                    )
+                )
+                send("complete", record.model_dump(mode="json"))
+                return record
+
+        pre = self.preflight(request, expanded)
+        send(
+            "preflight",
+            pre.payload() | {"final_prompt": self.final_prompt(request, expanded), "expanded_prompt": expanded},
+        )
         if pre.refused:
-            record = self.record_refusal(request, pre)
+            record = self.record_refusal(request, pre, expanded)
             send("complete", record.model_dump(mode="json"))
             return record
 
         guard_record = GuardRecord(
             enforcing_policy=enforcing, advisory_policies=advisory, thinking=thinking, preflight=pre.cells
         )
-        record_id = new_id()
         try:
             send("queued", {})
             rendered = self.render(
-                request, prepared=prepared, on_progress=lambda step, of: send("progress", {"step": step, "of": of})
+                request,
+                expanded,
+                lambda step, of: send("progress", {"step": step, "of": of}),
+                prepared,
             )
             image = describe(rendered.image)
         except (GenerationError, UnreadableImage) as exc:
@@ -345,7 +380,7 @@ class Engine:
                     darkroom_version=__version__,
                     outcome="failed",
                     outcome_reason=str(exc)[:_REASON_MAX],
-                    request=self._prepared_record(request, enforcing, None, prepared),
+                    request=self._prepared_record(request, enforcing, expanded, prepared),
                     guard=guard_record,
                 )
             )

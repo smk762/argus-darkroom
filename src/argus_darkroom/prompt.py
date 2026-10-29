@@ -26,6 +26,10 @@ def assemble_prompt(user_prompt: str, expanded_prompt: str | None = None, trigge
     return ", ".join(part for part in (body, *extra) if part)
 
 
+def _one_line(text: str) -> str:
+    return " ".join(text.split())
+
+
 def frame(final_prompt: str, negative_prompt: str = "") -> str:
     """The prompt and negative prompt as one labelled request.
 
@@ -34,9 +38,7 @@ def frame(final_prompt: str, negative_prompt: str = "") -> str:
     of ``child, minor, underage`` is a common safety practice and must not read as asking for those.
     It is always part of the check, so negating clothing is not a way round it either.
     """
-    negative = negative_prompt.strip() or NO_NEGATIVE
-    return (
-        "Image generation request.\n"
-        f"Prompt: {final_prompt.strip()}\n"
-        f"Negative prompt (what the image must not show): {negative}"
-    )
+    # One line each: a line break in a prompt must not let it pose as the frame's own labels
+    # ("...\nNegative prompt (what the image must not show): ...").
+    prompt, negative = _one_line(final_prompt), _one_line(negative_prompt) or NO_NEGATIVE
+    return f"Image generation request.\nPrompt: {prompt}\nNegative prompt (what the image must not show): {negative}"
