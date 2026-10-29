@@ -41,6 +41,16 @@ class PreflightResult:
     def refused(self) -> bool:
         return self.verdict == "refused"
 
+    def payload(self) -> dict:
+        """The result as sent to a client (``/preflight`` and the ``preflight`` event)."""
+        return {
+            "verdict": self.verdict,
+            "reason": self.reason,
+            "refusing_policy": self.refusing_policy,
+            "warnings": self.warnings,
+            "cells": {name: cell.model_dump(mode="json") for name, cell in self.cells.items()},
+        }
+
 
 def run_preflight(
     guard: Guard,

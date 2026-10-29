@@ -11,6 +11,8 @@ from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import env_flag
 
 PREFIX = "ARGUS_DARKROOM_"
+# Safelight's dev origin: read from it by default, and the only origin trusted to write unless others are named.
+LOCAL_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
 
 
 class ConfigError(ValueError):
@@ -31,6 +33,8 @@ class Settings:
     workflow: Path | None = None
     allow_nsfw: bool = False
     devmode: bool = False
+    # Origins allowed to read and, if named, to write. ``*`` allows anonymous reads from anywhere, never writes.
+    cors_origins: tuple[str, ...] = LOCAL_ORIGINS
 
     def __post_init__(self) -> None:
         if not self.singguard_url.strip():
@@ -75,4 +79,5 @@ class Settings:
             workflow=Path(p) if (p := get("WORKFLOW")) else None,
             allow_nsfw=allow_nsfw,
             devmode=env_flag(PREFIX + "DEVMODE"),
+            cors_origins=tuple(o.strip() for o in get("CORS_ORIGINS").split(",") if o.strip()) or LOCAL_ORIGINS,
         )
