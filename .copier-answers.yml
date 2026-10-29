@@ -1,0 +1,21 @@
+# Managed by Copier — do not edit by hand.
+# Run `copier update` in this repo to pull template changes.
+_commit: b53a3a4
+_src_path: /home/smk/argus-pkg-template
+author: smk762
+cli_name: argus-darkroom
+description: 'Guarded image generation for the Argus suite: prompts and outputs are
+    checked before anything is released.'
+dockerfile: Dockerfile
+github_owner: smk762
+has_cli: true
+has_server: true
+image_name: argus-darkroom
+package_name: argus_darkroom
+post_test: ''
+project_name: argus-darkroom
+python_min: '3.11'
+ruff_pin: 0.15.16
+test_extras: dev
+version_build_arg: false
+
