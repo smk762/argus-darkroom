@@ -34,6 +34,9 @@ logger = structlog.get_logger()
 
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 HEADER_BYTES = 8
+# Every run uses a client id with this prefix. ComfyUI keeps it in the history entry, which is how a purge finds
+# the prompts darkroom sent (and only those) if a delete was ever missed.
+CLIENT_PREFIX = "argus-darkroom-"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_TIMEOUT = 600.0  # one generation, from submit to image
 HTTP_TIMEOUT = 30.0
@@ -45,6 +48,14 @@ class GenerationError(RuntimeError):
 
 
 Progress = Callable[[int, int], None]  # (step, of)
+
+
+def _client_id(entry: object) -> str:
+    """The client id ComfyUI stored with a history entry (``prompt`` is ``[number, id, graph, extra_data, ...]``)."""
+    prompt = entry.get("prompt") if isinstance(entry, dict) else None
+    extra = prompt[3] if isinstance(prompt, list) and len(prompt) > 3 else None
+    client = extra.get("client_id") if isinstance(extra, dict) else None
+    return client if isinstance(client, str) else ""
 
 
 @dataclass(frozen=True)
@@ -120,6 +131,22 @@ class ComfyUIClient:
         except GenerationError as exc:
             logger.warning("comfyui.history_delete_failed", prompt_id=prompt_id, error=str(exc))
 
+    def purge_history(self) -> int:
+        """Delete every prompt in ComfyUI's history that darkroom sent, whatever run it belonged to.
+
+        Other clients' prompts are left alone. Returns how many were deleted; raises :class:`GenerationError`
+        when ComfyUI cannot be reached.
+        """
+        history = self._request("GET", "/history")
+        ours = [
+            prompt_id
+            for prompt_id, entry in (history.items() if isinstance(history, dict) else [])
+            if _client_id(entry).startswith(CLIENT_PREFIX)
+        ]
+        if ours:
+            self._request("POST", "/history", {"delete": ours})
+        return len(ours)
+
     def interrupt(self, prompt_id: str) -> None:
         """Stop *prompt_id* and drop it from the queue. Best effort."""
         for path, body in (("/queue", {"delete": [prompt_id]}), ("/interrupt", {})):
@@ -136,7 +163,7 @@ class ComfyUIClient:
         The prompt is deleted from ComfyUI's history whether the run succeeds or not. Raises
         :class:`GenerationError`.
         """
-        client_id = secrets.token_hex(8)
+        client_id = CLIENT_PREFIX + secrets.token_hex(8)
         deadline = time.monotonic() + self.timeout
         prompt_id: str | None = None
         try:

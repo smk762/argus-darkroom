@@ -38,7 +38,7 @@ from argus_darkroom.prompt import assemble_prompt
 from argus_darkroom.request import GenerateRequest, RequestError, check_policies
 from argus_darkroom.scan import Scanner
 from argus_darkroom.store import RecordStore, new_id
-from argus_darkroom.workflow import SAVE_NODE, RenderParams, Workflow, load_workflow, render
+from argus_darkroom.workflow import SAVE_NODE, RenderParams, Workflow, WorkflowError, load_workflow, render
 
 logger = structlog.get_logger()
 
@@ -193,11 +193,29 @@ class Engine:
             raise RequestError("no workflow is configured (ARGUS_DARKROOM_WORKFLOW)")
         if request.sampling is None or not request.checkpoint:
             raise RequestError("a generation needs sampling parameters and a checkpoint")
-        return Prepared(
+        prepared = Prepared(
             seed=request.seed if request.seed is not None else secrets.randbits(32),
             checkpoint=self.models.ref("checkpoint", request.checkpoint),
             vae=self.models.ref("vae", request.vae) if request.vae else None,
             loras=tuple(self.models.lora_ref(lora.name, lora.weight) for lora in request.loras),
+        )
+        try:  # the template's LoRA and VAE slots must fit this request: better a 400 now than a failure later
+            render(self.workflow, self._params(request, prepared, ""))
+        except WorkflowError as exc:
+            raise RequestError(str(exc)) from exc
+        return prepared
+
+    @staticmethod
+    def _params(request: GenerateRequest, prepared: Prepared, positive: str) -> RenderParams:
+        assert request.sampling is not None  # prepare() checked
+        return RenderParams(
+            positive=positive,
+            negative=request.negative_prompt,
+            seed=prepared.seed,
+            sampling=request.sampling,
+            checkpoint=prepared.checkpoint.name,
+            vae=prepared.vae.name if prepared.vae else None,
+            loras=prepared.loras,
         )
 
     def render(
@@ -216,22 +234,11 @@ class Engine:
         """
         prepared = prepared or self.prepare(request)
         workflow = self.workflow
-        assert workflow is not None and request.sampling is not None  # prepare() checked
+        assert workflow is not None  # prepare() checked
         enforcing, _ = self.policies(request)
 
         self._verify_outputs(workflow)
-        graph = render(
-            workflow,
-            RenderParams(
-                positive=self.final_prompt(request, expanded_prompt),
-                negative=request.negative_prompt,
-                seed=prepared.seed,
-                sampling=request.sampling,
-                checkpoint=prepared.checkpoint.name,
-                vae=prepared.vae.name if prepared.vae else None,
-                loras=prepared.loras,
-            ),
-        )
+        graph = render(workflow, self._params(request, prepared, self.final_prompt(request, expanded_prompt)))
         result = self.comfyui.render(graph, workflow.save_node_id, on_progress)
         return Rendered(
             image=result.image,
@@ -289,16 +296,33 @@ class Engine:
         Raises :class:`RequestError` (HTTP 400) before anything happens when the request cannot be served.
         """
 
+        return self.begin(request)(emit)
+
+    def begin(self, request: GenerateRequest) -> Callable[[Emit | None], GenerationRecord]:
+        """Validate *request* and fix everything that can fail on its own account, then return the run.
+
+        Splitting it from the run lets a server answer HTTP 400 before it opens a stream. Raises
+        :class:`RequestError`: an unknown or NSFW-without-flag policy, SFW without NudeNet, no workflow, a missing
+        model, sampling or checkpoint, or a workflow whose LoRA and VAE slots do not match the request.
+        """
+        self.policies(request)
+        prepared = self.prepare(request)
+        return lambda emit=None: self._run(request, prepared, emit)
+
+    def _run(self, request: GenerateRequest, prepared: Prepared, emit: Emit | None) -> GenerationRecord:
         def send(kind: str, data: dict) -> None:
+            # A listener that fails (a client that hung up) must not cost the record: the run goes on.
             if emit:
-                emit(kind, data)
+                try:
+                    emit(kind, data)
+                except Exception:
+                    logger.exception("engine.emit_failed", kind=kind)
 
         enforcing, advisory = self.policies(request)
-        prepared = self.prepare(request)
         thinking = request.thinking or self.settings.thinking
 
         pre = self.preflight(request)
-        send("preflight", _preflight_payload(pre))
+        send("preflight", pre.payload() | {"final_prompt": self.final_prompt(request)})
         if pre.refused:
             record = self.record_refusal(request, pre)
             send("complete", record.model_dump(mode="json"))
@@ -385,13 +409,3 @@ class Engine:
             self.store.remove_image(record.id)
             raise
         return record
-
-
-def _preflight_payload(pre: PreflightResult) -> dict:
-    return {
-        "verdict": pre.verdict,
-        "reason": pre.reason,
-        "refusing_policy": pre.refusing_policy,
-        "warnings": pre.warnings,
-        "cells": {name: cell.model_dump(mode="json") for name, cell in pre.cells.items()},
-    }

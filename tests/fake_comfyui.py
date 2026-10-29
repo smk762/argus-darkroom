@@ -84,6 +84,8 @@ class FakeComfyUI:
                 fake.calls.append(("GET", self.path))
                 if self.path == "/system_stats":
                     self._send(200, {"system": {"comfyui_version": fake.version}})
+                elif self.path == "/history":
+                    self._send(200, fake.history)
                 elif self.path.startswith("/object_info/"):
                     cls = urllib.parse.unquote(self.path.removeprefix("/object_info/"))
                     if cls in fake.unknown_nodes:
@@ -103,7 +105,9 @@ class FakeComfyUI:
                         return
                     prompt_id = str(uuid.uuid4())
                     fake.graphs.append(body["prompt"])
-                    fake.history[prompt_id] = {"prompt": body["prompt"]}
+                    fake.history[prompt_id] = {
+                        "prompt": [1, prompt_id, body["prompt"], {"client_id": body["client_id"]}, []]
+                    }
                     threading.Thread(
                         target=fake._run, args=(body["client_id"], prompt_id, body["prompt"]), daemon=True
                     ).start()
