@@ -110,7 +110,7 @@ class FaceAge(BaseModel):
     """A MiVOLO age estimate for one detected face. A tool's estimate, never a stated age."""
 
     age_estimate_years: float
-    bbox: tuple[float, float, float, float]
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
 
 
 class AgeRecord(BaseModel):
@@ -138,8 +138,12 @@ class ImageRecord(BaseModel):
     phash: str
     width: int = Field(gt=0)
     height: int = Field(gt=0)
-    # Set only when the image is passed or review (the only outcomes that write it).
+    # Set only when the image is passed or review (the only outcomes that write it): the file name under the
+    # output root.
     path: str | None = None
+    # Whether safelight blurs it until the user reveals it. True under an NSFW policy when NudeNet scores it at or
+    # above the request's threshold, or did not answer. Always false under an SFW policy.
+    blur: bool = False
 
 
 class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]

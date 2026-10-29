@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
+import structlog
 from argus_cortex.moderation import (
     CheckFailed,
     GuardResult,
@@ -19,6 +20,8 @@ from argus_cortex.moderation import (
 from argus_cortex.moderation import policies as policy_table
 
 from argus_darkroom.models import Cell
+
+logger = structlog.get_logger()
 
 DEFAULT_TIMEOUT = 180.0  # "cascade" runs the slow pass on whatever fast flags
 
@@ -79,10 +82,25 @@ class Guard:
 
     def check_text(self, policy: str, text: str, thinking: str | None = None) -> Cell:
         """A text-only check of *text* under *policy*; a failure is an ``unchecked`` cell, not an exception."""
+        return self._cell(policy, lambda: self.client(policy, thinking).check_text(text))
+
+    def check_image(self, policy: str, data: bytes, text: str = "", thinking: str | None = None) -> Cell:
+        """Judge an image under *policy*, with *text* alongside it (``""`` for the isolated scan).
+
+        A failure is an ``unchecked`` cell, not an exception: the outcome table fails closed on it.
+        """
+        return self._cell(policy, lambda: self.client(policy, thinking).check(data, text))
+
+    @staticmethod
+    def _cell(policy: str, run: Callable[[], GuardResult]) -> Cell:
         try:
-            return classify(policy, self.client(policy, thinking).check_text(text))
+            return classify(policy, run())
         except CheckFailed as exc:
             return unchecked(exc)
+        except Exception as exc:
+            # Anything else is still not a pass. A record is kept either way, so it must not escape as a 500.
+            logger.exception("guard.unexpected_error", policy=policy)
+            return unchecked(f"{type(exc).__name__}: {exc}")
 
 
 def _default_client(base_url: str, thinking: str, timeout: float, policy: str | None) -> SingGuardClient:

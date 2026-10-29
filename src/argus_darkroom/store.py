@@ -47,6 +47,23 @@ class RecordStore:
         tmp.replace(path)
         return path
 
+    def write_image(self, record_id: str, data: bytes) -> str:
+        """Write a released image, atomically, and return its file name under the root.
+
+        Only the release step calls this, after the verdict. A deleted or omitted image never gets here.
+        """
+        path = self.image_path(record_id)
+        tmp = path.with_suffix(".png.tmp")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return path.name
+
+    def remove_image(self, record_id: str) -> None:
+        self.image_path(record_id).unlink(missing_ok=True)
+
     def load(self, record_id: str) -> GenerationRecord | None:
         if not valid_id(record_id):
             return None
