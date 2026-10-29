@@ -36,7 +36,7 @@ def test_a_passed_image_is_written_served_and_recorded(rig) -> None:
     assert (rig.out / record.image.path).read_bytes() == rig.comfyui.png
     assert record.image.width == record.image.height == 64
     assert len(record.image.sha256) == 64 and record.image.phash
-    assert record.image.blur is False
+    assert record.guard.nudenet.blur is False
     assert sorted(p.name for p in rig.out.iterdir()) == [f"{record.id}.json", f"{record.id}.png"]
     assert rig.engine().store.load(record.id) == record
     assert rig.comfyui.history == {}
@@ -59,7 +59,7 @@ def test_every_cell_is_scanned_isolated_and_with_the_prompt(rig) -> None:
     assert all(c.isolated.state == c.with_prompt.state == "safe" for c in record.guard.scans.values())
     assert [k for k, _ in rig.events].count("scan") == 4
     assert [k for k, _ in rig.events][0] == "preflight" and rig.events[-1][0] == "complete"
-    assert ("progress", {"step": 1, "of": 2}) in rig.events
+    assert ("progress", {"step": 1, "total": 2}) in rig.events
 
 
 def test_a_disagreement_is_review_and_shows_in_the_record(rig) -> None:
@@ -177,7 +177,7 @@ def test_sfw_nudenet_timeout_is_omitted(rig) -> None:
     before = rig.files()
     record = rig.generate(rig.engine())
     assert (record.outcome, record.outcome_reason, record.critical) == ("omitted", "sfw-unchecked", False)
-    assert record.guard.nudenet is None
+    assert record.guard.nudenet.exposed_score is None and record.guard.nudenet.labels == {}  # it did not answer
     assert_no_bytes(rig, record, before)
 
 
@@ -209,7 +209,6 @@ def test_nsfw_nudenet_blurs_by_the_threshold_and_never_omits(rig, labels, thresh
     rig.nudenet.labels = labels
     record = rig.generate(rig.engine(), nsfw_threshold=threshold)
     assert record.outcome == "passed"
-    assert record.image.blur is blur
     assert record.guard.nudenet.blur is blur and record.guard.nudenet.threshold == threshold
     assert (rig.out / record.image.path).exists()
 
@@ -218,7 +217,9 @@ def test_nsfw_with_no_nudenet_answer_blurs(rig) -> None:
     nsfw(rig)
     rig.nudenet.status = 500
     record = rig.generate(rig.engine())
-    assert record.outcome == "passed" and record.image.blur is True and record.guard.nudenet is None
+    assert (
+        record.outcome == "passed" and record.guard.nudenet.blur is True and record.guard.nudenet.exposed_score is None
+    )
 
 
 # --- refused / failed ----------------------------------------------------------------------------------

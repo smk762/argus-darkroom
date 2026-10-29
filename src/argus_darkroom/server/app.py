@@ -23,12 +23,14 @@ import asyncio
 import contextlib
 import io
 import json
+import re
 import threading
 import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 import structlog
 from argus_cortex.moderation import policies as policy_table
@@ -64,6 +66,23 @@ def probe(url: str) -> bool:
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return True
+
+
+POLICY_SUMMARIES = {
+    "default": "SingGuard's own rules, which treat sexual content as a risk. The SFW policy: with no illegal rules, "
+    "it can only send an image to review.",
+    "adult": "Allows adult content. Rule A, illegal or extreme sexual content, is illegal.",
+    "adult-granular": "Allows adult content. Minors (A), non-consensual content (H) and sexual violence (I) are "
+    "separate illegal rules.",
+    "adult-cautious": "Like adult, but unclear age or unclear consent counts as rule A.",
+}
+_RULE_HEADING = re.compile(r"^### ([A-Z])\. (.+)$", re.MULTILINE)
+
+
+def rule_names(policy: str) -> dict[str, str]:
+    """Rule letter to the name the policy gives it, read from the policy text (``{}`` for `default`)."""
+    text = policy_table.policy_text(policy) or ""
+    return {code: name.strip() for code, name in _RULE_HEADING.findall(text)}
 
 
 def sse(kind: str, data: object) -> bytes:
@@ -131,17 +150,19 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
         return {
             "version": __version__,
-            # Whether each answers, never where: the URL can carry a credential.
-            "backends": {name: {"configured": bool(url), "up": up[name]} for name, url in urls.items()},
+            # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
+            # the age check can run; `age_unavailable` says why not.
+            "backends": {**up, "age": engine.age_status.available},
+            "age_unavailable": engine.age_status.reason,
             "policies": list(policy_table.POLICIES),
-            "enforcing_policy": cfg.policy,
+            "default_policy": cfg.policy,
+            "thinking": cfg.thinking,
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
             "expansion_enabled": cfg.expansion_enabled,
             "workflow_loaded": engine.workflow is not None,
-            "age": {"available": engine.age_status.available, "reason": engine.age_status.reason},
             "devmode": cfg.devmode,
-            "busy": busy.locked(),
+            "generating": busy.locked(),
         }
 
     @app.get("/policies")
@@ -152,9 +173,14 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 {
                     "name": name,
                     "mode": policy_table.mode(name),
-                    "illegal_rules": sorted(policy_table.illegal_rules(name)),
-                    # NSFW policies run as advisory only unless the server was started with --allow-nsfw.
-                    "advisory_only": policy_table.mode(name) == "nsfw" and not cfg.allow_nsfw,
+                    "summary": POLICY_SUMMARIES.get(name, ""),
+                    "illegal_rules": [
+                        {"code": code, "name": rule_names(name).get(code, "")}
+                        for code in sorted(policy_table.illegal_rules(name))
+                    ],
+                    # Whether this policy can enforce here. NSFW policies run as advisory only unless the server was
+                    # started with --allow-nsfw, and an SFW policy needs NudeNet to gate the output.
+                    "enforceable": cfg.allow_nsfw if policy_table.mode(name) == "nsfw" else cfg.sfw_available,
                     # SingGuard's own rules for `default`: nothing is sent, so there is no wording to show.
                     "text": policy_table.policy_text(name),
                 }
@@ -163,15 +189,17 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
 
     @app.get("/models")
-    def models() -> dict:
+    async def models() -> dict:
         try:
-            return {
-                "checkpoints": engine.models.names("checkpoint"),
-                "loras": engine.models.names("lora"),
-                "vaes": engine.models.names("vae"),
+            found = {
+                "checkpoints": [{"name": n} for n in engine.models.names("checkpoint")],
+                "loras": [{"name": n} for n in engine.models.names("lora")],
+                "vaes": [{"name": n} for n in engine.models.names("vae")],
             }
         except RequestError as exc:
             raise HTTPException(400, str(exc)) from exc
+        # What ComfyUI accepts, so the form offers only values that run (empty when ComfyUI does not say).
+        return found | await run_in_threadpool(engine.comfyui.sampling_choices)
 
     # -- pre-flight and generation -----------------------------------------------------------------------
     @app.post("/preflight")
@@ -182,7 +210,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             raise HTTPException(400, str(exc)) from exc
         # Expansion is not run here: it is not deterministic, so a verdict on one expansion would say nothing about
         # the one a generation makes. The generation judges its own final prompt, expansion included.
-        return result.payload() | {"final_prompt": engine.final_prompt(request), "expansion_applied": False}
+        return engine.preflight_view(request, result) | {"expansion_applied": False}
 
     @app.post("/generate/stream")
     async def generate_stream(request: GenerateRequest) -> StreamingResponse:
@@ -228,15 +256,16 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     @app.get("/records")
     def records(
         outcome: Outcome | None = None,
-        offset: int = Query(0, ge=0),
-        limit: int = Query(50, ge=1, le=MAX_PAGE),
+        mode: Literal["sfw", "nsfw"] | None = None,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=MAX_PAGE),
     ) -> dict:
-        page, total = engine.store.page(outcome, offset, limit)
+        found, total = engine.store.page(outcome, mode, (page - 1) * page_size, page_size)
         return {
+            "records": [r.model_dump(mode="json") for r in found],
             "total": total,
-            "offset": offset,
-            "limit": limit,
-            "records": [r.model_dump(mode="json") for r in page],
+            "page": page,
+            "page_size": page_size,
         }
 
     @app.get("/record/{record_id}")

@@ -124,6 +124,19 @@ class ComfyUIClient:
             out[class_type] = bool(entry.get("output_node"))
         return out
 
+    def sampling_choices(self) -> dict[str, list[str]]:
+        """The samplers and schedulers ComfyUI's ``KSampler`` accepts, so a form offers only values that run.
+        Empty lists when ComfyUI does not say."""
+        try:
+            info = self._request("GET", "/object_info/KSampler")
+            required = info["KSampler"]["input"]["required"]
+            return {
+                "samplers": [str(name) for name in required["sampler_name"][0]],
+                "schedulers": [str(name) for name in required["scheduler"][0]],
+            }
+        except (GenerationError, KeyError, IndexError, TypeError):
+            return {"samplers": [], "schedulers": []}
+
     def delete_history(self, prompt_id: str) -> None:
         """Drop the prompt from ComfyUI's history. Best effort: it must not hide the run's own error."""
         try:

@@ -84,7 +84,7 @@ def preflight(
     except RequestError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(EXIT_USAGE) from exc
-    typer.echo(json.dumps(result.payload() | {"final_prompt": engine.final_prompt(request)}, indent=2))
+    typer.echo(json.dumps(engine.preflight_view(request, result), indent=2))
     if result.refused:
         raise typer.Exit(EXIT_NOT_RELEASED)
 
@@ -141,9 +141,9 @@ def generate(
 
     def progress(kind: str, data: dict) -> None:
         if kind == "progress":
-            typer.echo(f"step {data['step']}/{data['of']}", err=True)
+            typer.echo(f"step {data['step']}/{data['total']}", err=True)
         elif kind == "preflight":
-            typer.echo(f"pre-flight: {data['verdict']}", err=True)
+            typer.echo(f"pre-flight: {data['outcome']}", err=True)
         elif kind == "scan":
             typer.echo(f"scan {data['policy']} {data['context']}: {data['cell']['state']}", err=True)
 
@@ -161,7 +161,7 @@ def generate(
         typer.echo(f"outcome  {record.outcome}" + (f" ({record.outcome_reason})" if record.outcome_reason else ""))
         if released:
             typer.echo(f"image    {engine.store.root / record.image.path}")
-            if record.image.blur:
+            if record.guard.nudenet is not None and record.guard.nudenet.blur:
                 typer.echo("blur     the image is marked to be blurred until revealed")
     if record.outcome not in ("passed", "review"):
         raise typer.Exit(EXIT_NOT_RELEASED)
