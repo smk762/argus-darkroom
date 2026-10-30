@@ -19,6 +19,7 @@ def test_http_estimator_posts_the_buffer_and_returns_faces() -> None:
         faces = HttpAgeEstimator(fake.url).estimate(b"png-bytes")
     assert [(f.age_estimate_years, f.bbox) for f in faces] == [(34.2, (1.0, 2.0, 3.0, 4.0))]
     assert fake.posts == [b"png-bytes"]
+    assert fake.paths == ["/faces?body=true"]
 
 
 def test_http_estimator_empty_when_there_is_no_face() -> None:

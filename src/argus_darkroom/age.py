@@ -77,7 +77,7 @@ class HttpAgeEstimator:
     """MiVOLO estimates from curator's ``POST /faces``. The buffer is posted; nothing is written here."""
 
     def __init__(self, base_url: str, timeout: float = CHECK_TIMEOUT) -> None:
-        self.url = base_url.rstrip("/") + "/faces"
+        self.url = base_url.rstrip("/") + "/faces?body=true"
         self.timeout = timeout
 
     def estimate(self, data: bytes) -> list[FaceAge]:

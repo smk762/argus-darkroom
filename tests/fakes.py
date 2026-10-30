@@ -133,6 +133,7 @@ class FakeFaces:
         self.status = status
         self.health_status = health_status
         self.posts: list[bytes] = []
+        self.paths: list[str] = []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -145,6 +146,7 @@ class FakeFaces:
                 self.wfile.write(data)
 
             def do_POST(self) -> None:
+                fake.paths.append(self.path)
                 fake.posts.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 data = json.dumps({"source": "mivolo", "faces": fake.faces}).encode()
                 self.send_response(fake.status)
