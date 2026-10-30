@@ -105,7 +105,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `SINGGUARD_URL` | | **Required.** |
 | `COMFYUI_URL` | `http://localhost:8188` | |
 | `NUDENET_URL` | | Empty: SFW generation unavailable. |
-| `AGE_URL` | | Curator's `POST /faces`. Empty: the in-process `[age]` extra, or no age check. |
+| `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra, or no age check. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
@@ -195,7 +195,7 @@ demo.
 
 ## Age check (optional)
 
-Set `AGE_URL` to a curator that serves `POST /faces` (the same InsightFace + MiVOLO pipeline, over HTTP, nothing
+Set `AGE_URL` to a curator that serves `POST /faces?body=true` (the same InsightFace + MiVOLO pipeline, over HTTP, nothing
 written). The Docker image is meant to be used this way.
 
 ```bash

@@ -19,6 +19,7 @@ def test_http_estimator_posts_the_buffer_and_returns_faces() -> None:
         faces = HttpAgeEstimator(fake.url).estimate(b"png-bytes")
     assert [(f.age_estimate_years, f.bbox) for f in faces] == [(34.2, (1.0, 2.0, 3.0, 4.0))]
     assert fake.posts == [b"png-bytes"]
+    assert fake.paths == ["/faces?body=true"]
 
 
 def test_http_estimator_empty_when_there_is_no_face() -> None:
@@ -52,6 +53,12 @@ def test_default_estimator_prefers_the_url() -> None:
         assert status.available
         assert est is not None
         assert est.estimate(b"x")[0].age_estimate_years == 21.0
+
+
+def test_default_estimator_keeps_the_http_client_when_health_is_down() -> None:
+    est, status = default_estimator("http://127.0.0.1:1")
+    assert not status.available
+    assert isinstance(est, HttpAgeEstimator)
 
 
 def test_from_env_reads_age_url(monkeypatch) -> None:

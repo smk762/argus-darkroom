@@ -77,7 +77,7 @@ class HttpAgeEstimator:
     """MiVOLO estimates from curator's ``POST /faces``. The buffer is posted; nothing is written here."""
 
     def __init__(self, base_url: str, timeout: float = CHECK_TIMEOUT) -> None:
-        self.url = base_url.rstrip("/") + "/faces"
+        self.url = base_url.rstrip("/") + "/faces?body=true"
         self.timeout = timeout
 
     def estimate(self, data: bytes) -> list[FaceAge]:
@@ -137,7 +137,8 @@ class CuratorAgeEstimator:
     def estimate(self, data: bytes) -> list[FaceAge]:
         result = self._result(rel_path="image", abs_path="", passed=True)
         try:
-            self._detect([result], [("image", "", data)], self._config)
+            # strict: a failed detector must not read as "no faces" (empty list, a pass).
+            self._detect([result], [("image", "", data)], self._config, strict=True)
         except Exception as exc:
             raise AgeUnavailable(f"face detection failed: {exc}") from exc
         faces: list[FaceAge] = []
@@ -169,12 +170,16 @@ def age_status() -> AgeStatus:
 
 
 def default_estimator(age_url: str = "") -> tuple[AgeEstimator | None, AgeStatus]:
-    """Prefer curator over HTTP; fall back to the in-process extra when no URL is set."""
+    """Prefer curator over HTTP; fall back to the in-process extra when no URL is set.
+
+    When a URL is set, the HTTP client is always returned. A failed boot probe
+    must not disable the check for the process lifetime: ``/health`` re-probes,
+    and ``estimate`` maps a down curator to :class:`AgeUnavailable` per image.
+    """
     if age_url.strip():
         status = remote_age_status(age_url)
         if not status.available:
             logger.info("age.unavailable", reason=status.reason)
-            return None, status
         return HttpAgeEstimator(age_url), status
     status = age_status()
     if not status.available:
