@@ -58,7 +58,8 @@ cp .env.example .env     # set SINGGUARD_URL and MODELS_ROOT at least
 docker compose up --build
 ```
 
-This runs darkroom (`:8106`) and safelight (`:3000`), both published on `127.0.0.1` only. Safelight is built from
+This runs darkroom (`:8106`) and safelight (`:3000`), both published on `127.0.0.1` only (`DARKROOM_PUBLISH` /
+`SAFELIGHT_PUBLISH` in `.env`). Safelight is built from
 `SAFELIGHT_CONTEXT` (default `../argus-safelight`); its darkroom URL is baked in at build time from
 `DARKROOM_PUBLIC_URL`. Records and images live in the `darkroom-data` volume. `MODELS_ROOT` is mounted read-only.
 
