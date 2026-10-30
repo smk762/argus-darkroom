@@ -124,11 +124,17 @@ class FakeFaces:
         self,
         faces: list[dict] | None = None,
         *,
+        people: list[dict] | None = None,
+        people_check: str | None = None,
+        people_error: str | None = None,
         health: dict | None = None,
         status: int = 200,
         health_status: int = 200,
     ) -> None:
         self.faces = faces or []
+        self.people = people
+        self.people_check = people_check
+        self.people_error = people_error
         self.health = health if health is not None else {"status": "ok", "faces": True, "mivolo": True}
         self.status = status
         self.health_status = health_status
@@ -148,7 +154,12 @@ class FakeFaces:
             def do_POST(self) -> None:
                 fake.paths.append(self.path)
                 fake.posts.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                data = json.dumps({"source": "mivolo", "faces": fake.faces}).encode()
+                payload: dict = {"source": "mivolo", "faces": fake.faces}
+                if fake.people is not None or fake.people_check is not None:
+                    payload["people"] = fake.people or []
+                    payload["people_check"] = fake.people_check
+                    payload["people_error"] = fake.people_error
+                data = json.dumps(payload).encode()
                 self.send_response(fake.status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

@@ -35,11 +35,11 @@ server = ["fastapi>=0.110", "uvicorn>=0.27"]
 cli = ["typer>=0.12", "rich>=13.0"]
 # MiVOLO age estimates through curator's face pipeline, in process. Also needs the ONNX file (`argus-curator
 # mivolo-convert`); without it the age check is skipped and /health says so.
-age = ["argus-curator[faces]>=0.9,<0.10"]
+age = ["argus-curator[faces]>=0.10,<0.11"]
 # httpx2 backs starlette's TestClient: starlette >=1.3 deprecated the httpx path
 # and raises when neither client is installed, so testing the server needs it.
 # argus-curator (no faces) gives the tests curator's result models for a fake detect_faces
-dev = ["argus-curator>=0.9,<0.10", "pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "httpx2>=2.7"]
+dev = ["argus-curator>=0.10,<0.11", "pytest>=8.0", "pytest-asyncio>=0.23", "ruff==0.15.16", "httpx2>=2.7"]
 
 [project.scripts]
 argus-darkroom = "argus_darkroom.cli:app"
