@@ -1,6 +1,7 @@
 .venv/
 # compose settings; .env.example is the committed template
 .env
+compose.override.yaml
 darkroom-output/
 __pycache__/
 *.pyc
