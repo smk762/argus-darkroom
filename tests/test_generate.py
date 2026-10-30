@@ -342,7 +342,7 @@ def fake_detect(*ages: float | None):
     calls = []
 
     def detect(results, items, cfg, **kw):
-        calls.append((results, items, cfg))
+        calls.append((results, items, cfg, kw))
         for age in ages:
             attrs = FaceAttributes(age_years=age, age_source="mivolo") if age is not None else None
             results[0].faces.append(FaceDetection(bbox=[1, 2, 30, 40], det_score=0.9, attributes=attrs))
@@ -355,9 +355,10 @@ def test_the_age_check_runs_curators_pipeline_from_memory() -> None:
     detect = fake_detect(30.0, 15.2)
     faces = CuratorAgeEstimator(detect).estimate(b"png bytes")
     assert [(f.age_estimate_years, f.bbox) for f in faces] == [(30.0, (1, 2, 30, 40)), (15.2, (1, 2, 30, 40))]
-    ((results, items, cfg),) = detect.calls
+    ((results, items, cfg, kw),) = detect.calls
     assert items == [("image", "", b"png bytes")]  # bytes in, no path to a file
     assert cfg.enabled and cfg.mivolo
+    assert kw.get("strict") is True
 
 
 def test_no_face_is_an_empty_list_not_unavailable() -> None:

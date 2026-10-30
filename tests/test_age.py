@@ -55,6 +55,12 @@ def test_default_estimator_prefers_the_url() -> None:
         assert est.estimate(b"x")[0].age_estimate_years == 21.0
 
 
+def test_default_estimator_keeps_the_http_client_when_health_is_down() -> None:
+    est, status = default_estimator("http://127.0.0.1:1")
+    assert not status.available
+    assert isinstance(est, HttpAgeEstimator)
+
+
 def test_from_env_reads_age_url(monkeypatch) -> None:
     monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
     monkeypatch.setenv("ARGUS_DARKROOM_AGE_URL", "http://curator:8101")
