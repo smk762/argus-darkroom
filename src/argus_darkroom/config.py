@@ -26,6 +26,7 @@ class Settings:
     ollama_url: str = ""  # empty turns prompt expansion off
     ollama_model: str = ""
     nudenet_url: str = ""  # empty: SFW generation is unavailable
+    age_url: str = ""  # curator's POST /faces; empty falls back to the in-process [age] extra
     policy: str = "default"
     thinking: str = "cascade"
     output_root: Path = Path("darkroom-output")
@@ -72,6 +73,7 @@ class Settings:
             ollama_url=get("OLLAMA_URL"),
             ollama_model=get("OLLAMA_MODEL"),
             nudenet_url=get("NUDENET_URL"),
+            age_url=get("AGE_URL"),
             policy=get("POLICY") or ("adult-granular" if allow_nsfw else "default"),
             thinking=get("THINKING", "cascade"),
             output_root=Path(get("OUTPUT_ROOT") or "darkroom-output"),

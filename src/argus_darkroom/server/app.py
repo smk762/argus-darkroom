@@ -148,12 +148,18 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
         with ThreadPoolExecutor(len(urls)) as pool:
             up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
+        if cfg.age_url:
+            from argus_darkroom.age import remote_age_status
+
+            age = remote_age_status(cfg.age_url)
+        else:
+            age = engine.age_status
         return {
             "version": __version__,
             # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
             # the age check can run; `age_unavailable` says why not.
-            "backends": {**up, "age": engine.age_status.available},
-            "age_unavailable": engine.age_status.reason,
+            "backends": {**up, "age": age.available},
+            "age_unavailable": age.reason,
             "policies": list(policy_table.POLICIES),
             "default_policy": cfg.policy,
             "thinking": cfg.thinking,

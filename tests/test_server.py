@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 from fake_comfyui import FakeComfyUI, event, grey_png
-from fakes import safe_answer, unsafe_answer
+from fakes import FakeFaces, safe_answer, unsafe_answer
 from rig import ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
@@ -74,6 +74,13 @@ def test_health(rig) -> None:
     assert body["policies"] == ["default", "adult", "adult-granular", "adult-cautious"]
     assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
+
+
+def test_health_age_is_up_when_curator_faces_answers(rig) -> None:
+    with FakeFaces() as fake:
+        body = client(rig, age_url=fake.url).get("/health").json()
+    assert body["backends"]["age"] is True
+    assert body["age_unavailable"] is None
 
 
 def test_health_says_what_is_down(rig) -> None:

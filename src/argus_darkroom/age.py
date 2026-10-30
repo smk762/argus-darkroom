@@ -1,15 +1,18 @@
-"""The optional age check: MiVOLO age estimates through curator's face pipeline, in process.
+"""The optional age check: MiVOLO estimates, over HTTP or in process.
 
-Behind the ``[age]`` extra (``argus-curator[faces]``) and curator's MiVOLO ONNX file (``argus-curator
-mivolo-convert``). When either is missing the check is skipped, the record says ``age: null`` and ``/health``
-says why. The image is judged from memory: curator's ``detect_faces`` takes ``(rel, abs, bytes)`` items, so
-nothing is written to disk.
+Prefer ``ARGUS_DARKROOM_AGE_URL`` (curator's ``POST /faces``). The image stays
+in memory; nothing is written. The ``[age]`` extra (curator's InsightFace and
+MiVOLO in this process) is the fallback when no URL is set.
 
-An estimate is a tool's reading of a face, never a stated age, and is named as such everywhere it appears.
+An estimate is a tool's reading of a face, never a stated age, and is named as
+such everywhere it appears. It is never sent to SingGuard as context.
 """
 
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -19,6 +22,9 @@ import structlog
 from argus_darkroom.models import FaceAge
 
 logger = structlog.get_logger()
+
+PROBE_TIMEOUT = 2.0
+CHECK_TIMEOUT = 30.0
 
 
 class AgeUnavailable(RuntimeError):
@@ -37,8 +43,82 @@ class AgeStatus:
     reason: str | None = None  # why not, for /health
 
 
+def _opener() -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def remote_age_status(base_url: str) -> AgeStatus:
+    """Whether curator's ``POST /faces`` can run: ``GET /health`` reports ``faces`` or ``mivolo``."""
+    url = base_url.rstrip("/") + "/health"
+    try:
+        with _opener().open(url, timeout=PROBE_TIMEOUT) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as exc:
+        # Any HTTP answer means the server is up; still need faces/mivolo in the body.
+        raw = exc.read() if exc.fp is not None else b""
+        if exc.code >= 500 and not raw:
+            return AgeStatus(False, f"AGE_URL /health returned HTTP {exc.code}")
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return AgeStatus(False, "AGE_URL did not answer")
+    try:
+        body = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return AgeStatus(False, "AGE_URL /health was not curator faces")
+    if not isinstance(body, dict):
+        return AgeStatus(False, "AGE_URL /health was not curator faces")
+    if body.get("faces") is True or body.get("mivolo") is True:
+        return AgeStatus(True)
+    if "faces" in body or "mivolo" in body:
+        return AgeStatus(False, "curator reports faces unavailable")
+    return AgeStatus(False, "AGE_URL /health was not curator faces")
+
+
+class HttpAgeEstimator:
+    """MiVOLO estimates from curator's ``POST /faces``. The buffer is posted; nothing is written here."""
+
+    def __init__(self, base_url: str, timeout: float = CHECK_TIMEOUT) -> None:
+        self.url = base_url.rstrip("/") + "/faces"
+        self.timeout = timeout
+
+    def estimate(self, data: bytes) -> list[FaceAge]:
+        req = urllib.request.Request(
+            self.url,
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        try:
+            with _opener().open(req, timeout=self.timeout) as resp:
+                payload = json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            raise AgeUnavailable(f"age check returned HTTP {exc.code}: {detail}") from exc
+        except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
+            raise AgeUnavailable(f"age check failed: {exc}") from exc
+        return _faces_from_payload(payload)
+
+
+def _faces_from_payload(payload: object) -> list[FaceAge]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("faces"), list):
+        raise AgeUnavailable("age check returned no faces list")
+    faces: list[FaceAge] = []
+    for item in payload["faces"]:
+        if not isinstance(item, dict):
+            raise AgeUnavailable("age check returned a malformed face")
+        years = item.get("age_estimate_years")
+        bbox = item.get("bbox")
+        if not isinstance(years, (int, float)) or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+            raise AgeUnavailable("age check returned a face without an estimate")
+        try:
+            box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError) as exc:
+            raise AgeUnavailable("age check returned a malformed bbox") from exc
+        faces.append(FaceAge(age_estimate_years=float(years), bbox=box))
+    return faces
+
+
 class CuratorAgeEstimator:
-    """Estimates ages with curator's InsightFace detector and MiVOLO.
+    """Estimates ages with curator's InsightFace detector and MiVOLO, in this process.
 
     *detect_faces* is curator's function, injectable so tests can fake it.
     """
@@ -88,7 +168,14 @@ def age_status() -> AgeStatus:
     return AgeStatus(True)
 
 
-def default_estimator() -> tuple[AgeEstimator | None, AgeStatus]:
+def default_estimator(age_url: str = "") -> tuple[AgeEstimator | None, AgeStatus]:
+    """Prefer curator over HTTP; fall back to the in-process extra when no URL is set."""
+    if age_url.strip():
+        status = remote_age_status(age_url)
+        if not status.available:
+            logger.info("age.unavailable", reason=status.reason)
+            return None, status
+        return HttpAgeEstimator(age_url), status
     status = age_status()
     if not status.available:
         logger.info("age.unavailable", reason=status.reason)

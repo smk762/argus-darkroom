@@ -32,7 +32,7 @@ not be broken and where things are.
 | `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
 | `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` template, model sha256s |
-| `age.py` | curator's `detect_faces`, behind the `[age]` extra |
+| `age.py` | curator over `AGE_URL` (`POST /faces`), or in-process `detect_faces` behind the `[age]` extra |
 | `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
 | `demo/run.py`, `demo/smoke.py` | the real server and engine over the test fakes; a marker in the prompt picks the verdicts. Demo only: it turns `DEVMODE` on and uses fake models |

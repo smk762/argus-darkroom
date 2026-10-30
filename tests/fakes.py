@@ -117,6 +117,58 @@ class FakeNudeNet:
         self._server.server_close()
 
 
+class FakeFaces:
+    """Curator's ``GET /health`` and ``POST /faces`` for the age check."""
+
+    def __init__(
+        self,
+        faces: list[dict] | None = None,
+        *,
+        health: dict | None = None,
+        status: int = 200,
+        health_status: int = 200,
+    ) -> None:
+        self.faces = faces or []
+        self.health = health if health is not None else {"status": "ok", "faces": True, "mivolo": True}
+        self.status = status
+        self.health_status = health_status
+        self.posts: list[bytes] = []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                data = json.dumps(fake.health).encode()
+                self.send_response(fake.health_status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self) -> None:
+                fake.posts.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+                data = json.dumps({"source": "mivolo", "faces": fake.faces}).encode()
+                self.send_response(fake.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+
+    def __enter__(self) -> FakeFaces:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
 class FakeOllama:
     """``POST /api/chat``: answers with *reply* (a string, or a callable of the request body), and keeps every body."""
 
