@@ -11,7 +11,7 @@ services:
     build: .
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8106:8106"
+      - "${DARKROOM_PUBLISH:-127.0.0.1:8106}:8106"
     environment:
       ARGUS_DARKROOM_SINGGUARD_URL: ${SINGGUARD_URL:?set SINGGUARD_URL in .env - darkroom never runs unguarded}
       ARGUS_DARKROOM_COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
@@ -36,7 +36,7 @@ services:
         NEXT_PUBLIC_DARKROOM_URL: ${DARKROOM_PUBLIC_URL:-http://localhost:8106}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${SAFELIGHT_PUBLISH:-127.0.0.1:3000}:3000"
     depends_on:
       darkroom:
         condition: service_healthy
