@@ -1,6 +1,6 @@
 UV ?= uv
 
-.PHONY: help install lint format test build clean
+.PHONY: help install lint format test build demo smoke clean
 
 help:  ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -22,6 +22,12 @@ test:  ## Run the test suite
 
 build:  ## Build sdist + wheel
 	$(UV) build
+
+demo:  ## Run the real server against fake backends (no GPU), on http://127.0.0.1:8106
+	$(UV) run --no-sync python demo/run.py
+
+smoke:  ## With `make demo` running: send every marker prompt and check the outcome
+	$(UV) run --no-sync python demo/smoke.py
 
 clean:  ## Remove build + cache artifacts
 	rm -rf dist build .venv *.egg-info .pytest_cache .ruff_cache src/argus_darkroom/_version.py

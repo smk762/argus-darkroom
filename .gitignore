@@ -1,4 +1,8 @@
 .venv/
+# compose settings; .env.example is the committed template
+.env
+compose.override.yaml
+darkroom-output/
 __pycache__/
 *.pyc
 dist/
@@ -8,3 +12,4 @@ build/
 .ruff_cache/
 # hatch-vcs writes this at build time (version derived from git tags)
 src/argus_darkroom/_version.py
+demo-data/
