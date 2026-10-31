@@ -71,10 +71,12 @@ def probe(url: str) -> bool:
 POLICY_SUMMARIES = {
     "default": "SingGuard's own rules, which treat sexual content as a risk. The SFW policy: with no illegal rules, "
     "it can only send an image to review.",
-    "adult": "Allows adult content. Rule A, illegal or extreme sexual content, is illegal.",
+    "adult": "Allows adult content. Rule A, illegal sexual content, is illegal.",
     "adult-granular": "Allows adult content. Minors (A), non-consensual content (H) and sexual violence (I) are "
     "separate illegal rules.",
     "adult-cautious": "Like adult, but unclear age or unclear consent counts as rule A.",
+    "adult-cinematic": "Like adult: legal adult entertainment is Safe. Rule B is narrowed to how-to / real "
+    "targeting; fictional crime (heist, fraud, dirty cops) is Safe. Rule A is illegal.",
 }
 _RULE_HEADING = re.compile(r"^### ([A-Z])\. (.+)$", re.MULTILINE)
 

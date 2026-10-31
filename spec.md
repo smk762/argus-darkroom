@@ -20,7 +20,7 @@ Do not rebuild these.
 - **Ollama** (`:11434`), optional, expands a short prompt. It is never a guard.
 - **SingGuard server**: agent-composer's `/api/guard/check` (`:9150`, Ollama GGUF `SingGuard-4b`). It accepts `input`, an optional `image_base64`, `input_role`, `policy` text and `thinking` (`fast`, `fast-slow`, `slow`, `cascade`), and answers `{safe, verdict, rule, rule_text, explanation, categories, model, thinking, elapsed_ms}`. A text-only check (no image) is how pre-flight works. Darkroom depends on that PR (agent-composer #4) being merged. A separate argus moderation-service package may replace it later; the client must not care which.
 - **NudeNet server**, over HTTP. Never imported (AGPL).
-- **argus-cortex** (`>=0.4.2,<0.5`):
+- **argus-cortex** (`>=0.4.5,<0.5`):
   - `moderation.SingGuardClient` / `NudeNetClient` / `exposed_score`.
   - New in 0.4.2: `SingGuardClient.check_text()`, and `moderation.policies`: the named policy texts (moved from curator's `guard.py`) and the per-policy table of illegal rules.
   - `server.WriteGuard` / `cross_site_refuse` / `env_flag`.
@@ -50,7 +50,7 @@ The comparison between the isolated scan and the with-prompt scan is the point o
 - Requests name policies; they never send policy text. The names come from `argus_cortex.moderation.policies`.
 - **Enforcing policy:** one per request. Its verdict decides pre-flight, and its name sets the [mode](#mode). The server default (`ARGUS_DARKROOM_POLICY`) is `adult-granular` when NSFW is allowed, and `default` when it is not.
 - **Advisory policies:** zero or more extra policies run for comparison. They never block or release an image, except that an illegal rule under any policy still deletes.
-- During development, all four names are available: `default`, `adult`, `adult-granular` and `adult-cautious`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
+- During development, all five names are available: `default`, `adult`, `adult-granular`, `adult-cautious` and `adult-cinematic`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
 - "Configurable" means picking the enforcing and advisory policies and the thinking mode. SingGuard returns a verdict, not a score, so it has no threshold to tune. The NudeNet threshold is a real number and is configurable (see [Verdicts](#verdicts)).
 
 ### Mode
@@ -77,8 +77,8 @@ Each policy has its own table, because rule letters mean different things under 
 
 | Policy | Illegal (delete) | Everything else |
 |---|---|---|
-| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence & Extreme | review |
-| `adult`, `adult-cautious` | A Illegal or Extreme Sexual Content | review |
+| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence | review |
+| `adult`, `adult-cautious`, `adult-cinematic` | A Illegal Sexual Content | review |
 | `default` | none | review |
 
 Under SingGuard's own `default` rules, A is "Sexual Content Risk", which also covers consensual adult nudity. Treating it as illegal would delete every adult image whenever `default` is chosen for comparison, so `default` can only send an image to review. B (Real-World Crimes) and G (Animal Abuse) go to review, not deletion, under every policy. The table lives in cortex next to the policy texts, so a policy and its illegal rules cannot drift apart.
