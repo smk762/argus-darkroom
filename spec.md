@@ -50,7 +50,7 @@ The comparison between the isolated scan and the with-prompt scan is the point o
 - Requests name policies; they never send policy text. The names come from `argus_cortex.moderation.policies`.
 - **Enforcing policy:** one per request. Its verdict decides pre-flight, and its name sets the [mode](#mode). The server default (`ARGUS_DARKROOM_POLICY`) is `adult-granular` when NSFW is allowed, and `default` when it is not.
 - **Advisory policies:** zero or more extra policies run for comparison. They never block or release an image, except that an illegal rule under any policy still deletes.
-- During development, all four names are available: `default`, `adult`, `adult-granular` and `adult-cautious`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
+- During development, all five names are available: `default`, `adult`, `adult-granular`, `adult-cautious` and `adult-cinematic`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
 - "Configurable" means picking the enforcing and advisory policies and the thinking mode. SingGuard returns a verdict, not a score, so it has no threshold to tune. The NudeNet threshold is a real number and is configurable (see [Verdicts](#verdicts)).
 
 ### Mode
@@ -78,7 +78,7 @@ Each policy has its own table, because rule letters mean different things under 
 | Policy | Illegal (delete) | Everything else |
 |---|---|---|
 | `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence & Extreme | review |
-| `adult`, `adult-cautious` | A Illegal or Extreme Sexual Content | review |
+| `adult`, `adult-cautious`, `adult-cinematic` | A Illegal or Extreme Sexual Content | review |
 | `default` | none | review |
 
 Under SingGuard's own `default` rules, A is "Sexual Content Risk", which also covers consensual adult nudity. Treating it as illegal would delete every adult image whenever `default` is chosen for comparison, so `default` can only send an image to review. B (Real-World Crimes) and G (Animal Abuse) go to review, not deletion, under every policy. The table lives in cortex next to the policy texts, so a policy and its illegal rules cannot drift apart.
