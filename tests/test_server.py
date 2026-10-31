@@ -100,7 +100,7 @@ def test_policies_mark_nsfw_as_not_enforceable_without_the_flag(rig) -> None:
     assert by_name["adult-granular"]["illegal_rules"] == [
         {"code": "A", "name": "Minors"},
         {"code": "H", "name": "Non-Consensual Sexual Content"},
-        {"code": "I", "name": "Sexual Violence & Extreme Content"},
+        {"code": "I", "name": "Sexual Violence"},
     ]
     assert all(p["summary"] for p in body["policies"])
     assert set(policy_table.POLICIES) <= set(POLICY_SUMMARIES)

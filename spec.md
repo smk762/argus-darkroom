@@ -20,7 +20,7 @@ Do not rebuild these.
 - **Ollama** (`:11434`), optional, expands a short prompt. It is never a guard.
 - **SingGuard server**: agent-composer's `/api/guard/check` (`:9150`, Ollama GGUF `SingGuard-4b`). It accepts `input`, an optional `image_base64`, `input_role`, `policy` text and `thinking` (`fast`, `fast-slow`, `slow`, `cascade`), and answers `{safe, verdict, rule, rule_text, explanation, categories, model, thinking, elapsed_ms}`. A text-only check (no image) is how pre-flight works. Darkroom depends on that PR (agent-composer #4) being merged. A separate argus moderation-service package may replace it later; the client must not care which.
 - **NudeNet server**, over HTTP. Never imported (AGPL).
-- **argus-cortex** (`>=0.4.2,<0.5`):
+- **argus-cortex** (`>=0.4.5,<0.5`):
   - `moderation.SingGuardClient` / `NudeNetClient` / `exposed_score`.
   - New in 0.4.2: `SingGuardClient.check_text()`, and `moderation.policies`: the named policy texts (moved from curator's `guard.py`) and the per-policy table of illegal rules.
   - `server.WriteGuard` / `cross_site_refuse` / `env_flag`.
@@ -77,8 +77,8 @@ Each policy has its own table, because rule letters mean different things under 
 
 | Policy | Illegal (delete) | Everything else |
 |---|---|---|
-| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence & Extreme | review |
-| `adult`, `adult-cautious`, `adult-cinematic` | A Illegal or Extreme Sexual Content | review |
+| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence | review |
+| `adult`, `adult-cautious`, `adult-cinematic` | A Illegal Sexual Content | review |
 | `default` | none | review |
 
 Under SingGuard's own `default` rules, A is "Sexual Content Risk", which also covers consensual adult nudity. Treating it as illegal would delete every adult image whenever `default` is chosen for comparison, so `default` can only send an image to review. B (Real-World Crimes) and G (Animal Abuse) go to review, not deletion, under every policy. The table lives in cortex next to the policy texts, so a policy and its illegal rules cannot drift apart.
