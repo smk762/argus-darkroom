@@ -41,6 +41,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from argus_darkroom import __version__
+from argus_darkroom.age import HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
@@ -146,14 +147,12 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "nudenet": cfg.nudenet_url,
             "ollama": cfg.ollama_url,
         }
-        with ThreadPoolExecutor(len(urls)) as pool:
+        # Re-probe the estimator the engine actually uses, alongside the other backends; the boot status is stale.
+        remote = engine.scanner.age if isinstance(engine.scanner.age, HttpAgeEstimator) else None
+        with ThreadPoolExecutor(len(urls) + 1) as pool:
+            age_future = pool.submit(remote_age_status, remote.base_url) if remote is not None else None
             up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
-        if cfg.age_url:
-            from argus_darkroom.age import remote_age_status
-
-            age = remote_age_status(cfg.age_url)
-        else:
-            age = engine.age_status
+            age = age_future.result() if age_future is not None else engine.age_status
         return {
             "version": __version__,
             # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
