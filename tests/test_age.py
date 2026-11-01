@@ -37,6 +37,56 @@ def test_http_estimator_malformed_face_is_unavailable() -> None:
         HttpAgeEstimator(fake.url).estimate(b"x")
 
 
+def test_http_estimator_includes_unmatched_people() -> None:
+    with FakeFaces(
+        faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}],
+        people=[
+            {"age_estimate_years": 34.2, "bbox": [0, 0, 10, 20], "face_index": 0},
+            {"age_estimate_years": 15.0, "bbox": [40, 0, 10, 20], "face_index": None},
+        ],
+        people_check="ok",
+    ) as fake:
+        faces = HttpAgeEstimator(fake.url).estimate(b"x")
+    assert [f.age_estimate_years for f in faces] == [34.2, 15.0]
+
+
+def test_http_estimator_unmatched_person_with_no_estimate_is_unavailable() -> None:
+    # Fail closed: a person with no estimate could be a minor, so the image has no age check, not a clean one.
+    with (
+        FakeFaces(
+            faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}],
+            people=[{"age_estimate_years": None, "bbox": [80, 0, 10, 20], "face_index": None}],
+            people_check="ok",
+        ) as fake,
+        pytest.raises(AgeUnavailable, match="person without an estimate"),
+    ):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
+def test_http_estimator_matched_person_with_no_body_estimate_is_skipped() -> None:
+    # A matched person is the face's own body; the face carries the estimate.
+    with FakeFaces(
+        faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}],
+        people=[{"age_estimate_years": None, "bbox": [0, 0, 10, 20], "face_index": 0}],
+        people_check="ok",
+    ) as fake:
+        faces = HttpAgeEstimator(fake.url).estimate(b"x")
+    assert [f.age_estimate_years for f in faces] == [34.2]
+
+
+def test_http_estimator_people_check_failed_is_unavailable() -> None:
+    with (
+        FakeFaces(people_check="detection_failed", people_error="onnx exploded") as fake,
+        pytest.raises(AgeUnavailable, match="detection_failed"),
+    ):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
+def test_http_estimator_unknown_people_check_is_unavailable() -> None:
+    with FakeFaces(people_check="mystery") as fake, pytest.raises(AgeUnavailable, match="mystery"):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
 def test_remote_status_reads_faces_on_health() -> None:
     with FakeFaces() as fake:
         assert remote_age_status(fake.url).available
@@ -71,6 +121,16 @@ def test_from_env_reads_age_url(monkeypatch) -> None:
 def test_http_estimator_rejects_a_non_estimate(years) -> None:
     face = {"age_estimate_years": years, "bbox": [1, 2, 3, 4]}
     with FakeFaces(faces=[face]) as fake, pytest.raises(AgeUnavailable, match="without an estimate"):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
+@pytest.mark.parametrize("years", [float("nan"), float("inf"), True, -1])
+def test_http_estimator_rejects_a_non_estimate_for_an_unmatched_person(years) -> None:
+    person = {"age_estimate_years": years, "bbox": [0, 0, 10, 20], "face_index": None}
+    with (
+        FakeFaces(people=[person], people_check="ok") as fake,
+        pytest.raises(AgeUnavailable, match="person without an estimate"),
+    ):
         HttpAgeEstimator(fake.url).estimate(b"x")
 
 

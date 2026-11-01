@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from fake_comfyui import FakeComfyUI, event
-from fakes import policy_of, safe_answer, unsafe_answer
+from fakes import FakeFaces, policy_of, safe_answer, unsafe_answer
 from rig import (  # noqa: F401
     EXAMPLES,
     EXPOSED,
@@ -21,7 +21,7 @@ from rig import (  # noqa: F401
     nsfw,
 )
 
-from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator
+from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator, HttpAgeEstimator
 from argus_darkroom.models import FaceAge, GenerationRecord
 from argus_darkroom.prompt import frame
 from argus_darkroom.request import RequestError
@@ -321,6 +321,21 @@ def test_an_adult_estimate_with_exposure_is_served(rig) -> None:
     assert rig.generate(rig.engine(age=FakeAge(18, 40))).outcome == "passed"
 
 
+def test_a_faceless_person_under_18_with_exposure_deletes(rig) -> None:
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    before = rig.files()
+    with FakeFaces(
+        faces=[],
+        people=[{"age_estimate_years": 15.0, "bbox": [0, 0, 40, 80], "face_index": None}],
+        people_check="ok",
+    ) as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    assert (record.outcome, record.outcome_reason, record.critical) == ("deleted", "minor-exposed", True)
+    assert [f.age_estimate_years for f in record.guard.age.faces] == [15.0]
+    assert_no_bytes(rig, record, before)
+
+
 @pytest.mark.parametrize(
     "estimator", [None, FakeAge(error=AgeUnavailable("no weights")), FakeAge(error=RuntimeError("boom"))]
 )
@@ -357,7 +372,7 @@ def test_the_age_check_runs_curators_pipeline_from_memory() -> None:
     assert [(f.age_estimate_years, f.bbox) for f in faces] == [(30.0, (1, 2, 30, 40)), (15.2, (1, 2, 30, 40))]
     ((results, items, cfg, kw),) = detect.calls
     assert items == [("image", "", b"png bytes")]  # bytes in, no path to a file
-    assert cfg.enabled and cfg.mivolo
+    assert cfg.enabled and cfg.mivolo and cfg.mivolo_body
     assert kw.get("strict") is True
 
 
@@ -368,6 +383,51 @@ def test_no_face_is_an_empty_list_not_unavailable() -> None:
 def test_a_face_with_no_estimate_makes_the_check_unavailable_for_the_image() -> None:
     with pytest.raises(AgeUnavailable, match="no age"):
         CuratorAgeEstimator(fake_detect(30.0, None)).estimate(b"x")
+
+
+def fake_detect_people(*people: tuple[float | None, int | None, str | None], check: str | None = "ok"):
+    """``detect_faces`` that fills ``ImageResult.people`` as ``(age_years, face_index, age_source)``."""
+    from argus_curator.models import PersonDetection
+
+    def detect(results, items, cfg, **kw):
+        results[0].people_check = check
+        for age, face_index, source in people:
+            results[0].people.append(
+                PersonDetection(
+                    bbox=[0, 0, 40, 80], det_score=0.9, face_index=face_index, age_years=age, age_source=source
+                )
+            )
+
+    return detect
+
+
+def test_an_unmatched_person_with_an_estimate_counts_as_a_face() -> None:
+    faces = CuratorAgeEstimator(fake_detect_people((15.0, None, "mivolo"))).estimate(b"x")
+    assert [(f.age_estimate_years, f.bbox) for f in faces] == [(15.0, (0, 0, 40, 80))]
+
+
+@pytest.mark.parametrize("person", [(None, None, None), (float("nan"), None, "mivolo"), (15.0, None, "fairface")])
+def test_an_unmatched_person_with_no_estimate_makes_the_check_unavailable(person) -> None:
+    with pytest.raises(AgeUnavailable, match="no age for a detected person"):
+        CuratorAgeEstimator(fake_detect_people(person)).estimate(b"x")
+
+
+def test_an_unknown_people_check_makes_the_check_unavailable() -> None:
+    with pytest.raises(AgeUnavailable, match="mystery"):
+        CuratorAgeEstimator(fake_detect_people(check="mystery")).estimate(b"x")
+
+
+def test_a_faceless_person_with_no_estimate_records_no_age_check(rig) -> None:
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    with FakeFaces(
+        faces=[],
+        people=[{"age_estimate_years": None, "bbox": [0, 0, 40, 80], "face_index": None}],
+        people_check="ok",
+    ) as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    # Not "checked, no minor": the record says the age check did not run for this image.
+    assert record.guard.age is None
 
 
 def test_a_failing_detector_is_unavailable() -> None:

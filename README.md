@@ -195,8 +195,10 @@ demo.
 
 ## Age check (optional)
 
-Set `AGE_URL` to a curator that serves `POST /faces?body=true` (the same InsightFace + MiVOLO pipeline, over HTTP, nothing
-written). The Docker image is meant to be used this way.
+Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
+unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,
+not as "no one found", and so is an unmatched person with no estimate. An unavailable age check never deletes on its
+own: the record says `age: null` and the image is judged by SingGuard and NudeNet.
 
 ```bash
 uv pip install "argus-darkroom[age]"   # in-process fallback when AGE_URL is empty
