@@ -75,7 +75,7 @@ class Demo:
     def singguard(self, body: dict) -> tuple[int, dict]:
         time.sleep(self.latency)  # so the shield grid visibly fills in
         policy = policy_of(body)
-        illegal = unsafe_answer(ILLEGAL_RULE.get(policy, "A. Illegal or Extreme Sexual Content"), explanation=WHY)
+        illegal = unsafe_answer(ILLEGAL_RULE.get(policy, "A. Illegal Sexual Content"), explanation=WHY)
         flagged = unsafe_answer("B. Real-World Crimes & Public Safety", explanation=WHY)
         if "image_base64" not in body:  # pre-flight: the text is the request
             found = markers_in(body["input"])

@@ -118,7 +118,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 
 `ALLOW_NSFW` and `DEVMODE` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
 
-Policies are chosen by name (`default`, `adult`, `adult-granular`, `adult-cautious`); a request cannot carry policy
+Policies are chosen by name (`default`, `adult`, `adult-granular`, `adult-cautious`, `adult-cinematic`); a request cannot carry policy
 text. `default` and `sfw-*` are SFW, the rest NSFW. SFW refuses on any pre-flight flag and omits exposed output. NSFW
 warns on non-illegal flags and blurs exposed output, and illegal content is refused and deleted in both.
 
