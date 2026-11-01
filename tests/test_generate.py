@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 from fake_comfyui import FakeComfyUI, event
-from fakes import policy_of, safe_answer, unsafe_answer
+from fakes import FakeFaces, policy_of, safe_answer, unsafe_answer
 from rig import (  # noqa: F401
     EXAMPLES,
     EXPOSED,
@@ -21,7 +21,7 @@ from rig import (  # noqa: F401
     nsfw,
 )
 
-from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator
+from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator, HttpAgeEstimator
 from argus_darkroom.models import FaceAge, GenerationRecord
 from argus_darkroom.prompt import frame
 from argus_darkroom.request import RequestError
@@ -321,6 +321,21 @@ def test_an_adult_estimate_with_exposure_is_served(rig) -> None:
     assert rig.generate(rig.engine(age=FakeAge(18, 40))).outcome == "passed"
 
 
+def test_a_faceless_person_under_18_with_exposure_deletes(rig) -> None:
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    before = rig.files()
+    with FakeFaces(
+        faces=[],
+        people=[{"age_estimate_years": 15.0, "bbox": [0, 0, 40, 80], "face_index": None}],
+        people_check="ok",
+    ) as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    assert (record.outcome, record.outcome_reason, record.critical) == ("deleted", "minor-exposed", True)
+    assert [f.age_estimate_years for f in record.guard.age.faces] == [15.0]
+    assert_no_bytes(rig, record, before)
+
+
 @pytest.mark.parametrize(
     "estimator", [None, FakeAge(error=AgeUnavailable("no weights")), FakeAge(error=RuntimeError("boom"))]
 )
@@ -357,7 +372,7 @@ def test_the_age_check_runs_curators_pipeline_from_memory() -> None:
     assert [(f.age_estimate_years, f.bbox) for f in faces] == [(30.0, (1, 2, 30, 40)), (15.2, (1, 2, 30, 40))]
     ((results, items, cfg, kw),) = detect.calls
     assert items == [("image", "", b"png bytes")]  # bytes in, no path to a file
-    assert cfg.enabled and cfg.mivolo
+    assert cfg.enabled and cfg.mivolo and cfg.mivolo_body
     assert kw.get("strict") is True
 
 

@@ -1,8 +1,8 @@
 """The optional age check: MiVOLO estimates, over HTTP or in process.
 
-Prefer ``ARGUS_DARKROOM_AGE_URL`` (curator's ``POST /faces``). The image stays
-in memory; nothing is written. The ``[age]`` extra (curator's InsightFace and
-MiVOLO in this process) is the fallback when no URL is set.
+Prefer ``ARGUS_DARKROOM_AGE_URL`` (curator's ``POST /faces?body=true``). The
+image stays in memory; nothing is written. The ``[age]`` extra (curator's
+InsightFace and MiVOLO in this process) is the fallback when no URL is set.
 
 An estimate is a tool's reading of a face, never a stated age, and is named as
 such everywhere it appears. It is never sent to SingGuard as context.
@@ -26,6 +26,7 @@ logger = structlog.get_logger()
 
 PROBE_TIMEOUT = 2.0
 CHECK_TIMEOUT = 30.0
+_PEOPLE_CHECK_FAILED = frozenset({"detection_failed", "body_ages_failed"})
 
 
 class AgeUnavailable(RuntimeError):
@@ -78,7 +79,7 @@ def remote_age_status(base_url: str) -> AgeStatus:
 
 
 class HttpAgeEstimator:
-    """MiVOLO estimates from curator's ``POST /faces``. The buffer is posted; nothing is written here."""
+    """MiVOLO estimates from curator's ``POST /faces?body=true``. The buffer is posted; nothing is written here."""
 
     def __init__(self, base_url: str, timeout: float = CHECK_TIMEOUT) -> None:
         self.base_url = base_url
@@ -106,33 +107,57 @@ class HttpAgeEstimator:
         return _faces_from_payload(payload)
 
 
+def _face_from_item(item: object, kind: str) -> FaceAge:
+    if not isinstance(item, dict):
+        raise AgeUnavailable(f"age check returned a malformed {kind}")
+    years = item.get("age_estimate_years")
+    bbox = item.get("bbox")
+    # bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and NaN < 18 is False, so
+    # accepting one would let the minors rule silently not fire.
+    if isinstance(years, bool) or not isinstance(years, (int, float)) or not math.isfinite(years) or years < 0:
+        raise AgeUnavailable(f"age check returned a {kind} without an estimate")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        raise AgeUnavailable(f"age check returned a {kind} without an estimate")
+    try:
+        box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    except (TypeError, ValueError) as exc:
+        raise AgeUnavailable("age check returned a malformed bbox") from exc
+    return FaceAge(age_estimate_years=float(years), bbox=box)
+
+
 def _faces_from_payload(payload: object) -> list[FaceAge]:
+    """Faces, plus unmatched people that still have an estimate.
+
+    Curator 0.10 ``POST /faces?body=true`` returns body-only ages in ``people``.
+    Those must feed ``minor_exposed``: a faceless minor is still a minor.
+    ``people_check`` other than ``ok`` means an empty list is not "none found".
+    Matched people duplicate a face and are skipped. A person with no estimate
+    is skipped so partial body evidence cannot fail the face list.
+    """
     if not isinstance(payload, dict) or not isinstance(payload.get("faces"), list):
         raise AgeUnavailable("age check returned no faces list")
     if payload.get("source", "mivolo") != "mivolo":
         raise AgeUnavailable(f"age check source was {payload.get('source')!r}, not mivolo")
-    faces: list[FaceAge] = []
-    for item in payload["faces"]:
+    check = payload.get("people_check")
+    if check in _PEOPLE_CHECK_FAILED:
+        detail = payload.get("people_error") or check
+        raise AgeUnavailable(f"people check {check}: {detail}")
+    if check is not None and check != "ok":
+        raise AgeUnavailable(f"people check {check!r}")
+    faces = [_face_from_item(item, "face") for item in payload["faces"]]
+    people = payload.get("people")
+    if people is None:
+        return faces
+    if not isinstance(people, list):
+        raise AgeUnavailable("age check returned a malformed people list")
+    for item in people:
         if not isinstance(item, dict):
-            raise AgeUnavailable("age check returned a malformed face")
-        years = item.get("age_estimate_years")
-        bbox = item.get("bbox")
-        # bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and NaN < 18 is False, so
-        # accepting one would let the minors rule silently not fire.
-        if (
-            isinstance(years, bool)
-            or not isinstance(years, (int, float))
-            or not math.isfinite(years)
-            or years < 0
-            or not isinstance(bbox, (list, tuple))
-            or len(bbox) != 4
-        ):
-            raise AgeUnavailable("age check returned a face without an estimate")
-        try:
-            box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        except (TypeError, ValueError) as exc:
-            raise AgeUnavailable("age check returned a malformed bbox") from exc
-        faces.append(FaceAge(age_estimate_years=float(years), bbox=box))
+            raise AgeUnavailable("age check returned a malformed person")
+        if item.get("face_index") is not None:
+            continue
+        if item.get("age_estimate_years") is None:
+            continue
+        faces.append(_face_from_item(item, "person"))
     return faces
 
 
@@ -150,7 +175,7 @@ class CuratorAgeEstimator:
         if detect_faces is None:
             from argus_curator.faces import detect_faces
         self._detect = detect_faces
-        self._config = FaceConfig(enabled=True, mivolo=True)
+        self._config = FaceConfig(enabled=True, mivolo=True, mivolo_body=True)
         self._result = ImageResult
 
     def estimate(self, data: bytes) -> list[FaceAge]:
@@ -160,6 +185,10 @@ class CuratorAgeEstimator:
             self._detect([result], [("image", "", data)], self._config, strict=True)
         except Exception as exc:
             raise AgeUnavailable(f"face detection failed: {exc}") from exc
+        check = getattr(result, "people_check", None)
+        if check in _PEOPLE_CHECK_FAILED:
+            detail = getattr(result, "people_error", None) or check
+            raise AgeUnavailable(f"people check {check}: {detail}")
         faces: list[FaceAge] = []
         for face in result.faces:
             attrs = face.attributes
@@ -170,6 +199,14 @@ class CuratorAgeEstimator:
                 raise AgeUnavailable("MiVOLO gave no age for a detected face")
             x, y, w, h = face.bbox
             faces.append(FaceAge(age_estimate_years=float(years), bbox=(x, y, w, h)))
+        for person in getattr(result, "people", None) or []:
+            if getattr(person, "face_index", None) is not None:
+                continue
+            body_years = getattr(person, "age_years", None)
+            if body_years is None:
+                continue
+            x, y, w, h = person.bbox
+            faces.append(FaceAge(age_estimate_years=float(body_years), bbox=(x, y, w, h)))
         return faces
 
 
