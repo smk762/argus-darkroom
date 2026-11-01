@@ -85,15 +85,13 @@ def test_review_reason_lists_flagged_rules() -> None:
     [
         ("adult-granular", "A. Minors", "illegal"),
         ("adult-granular", "H. Non-Consensual Sexual Content", "illegal"),
-        ("adult-granular", "I. Sexual Violence", "illegal"),
+        ("adult-granular", "I. Sexual Violence & Extreme Content", "illegal"),
         ("adult-granular", "B. Real-World Crimes & Public Safety", "flagged"),
         ("adult-granular", "G. Animal Abuse", "flagged"),
-        ("adult", "A. Illegal Sexual Content", "illegal"),
+        ("adult", "A. Illegal or Extreme Sexual Content", "illegal"),
         ("adult", "H", "flagged"),  # no H under `adult`
-        ("adult-cautious", "A. Illegal Sexual Content", "illegal"),
+        ("adult-cautious", "A. Illegal or Extreme Sexual Content", "illegal"),
         ("adult-cautious", "B. Real-World Crimes & Public Safety", "flagged"),
-        ("adult-cinematic", "A. Illegal Sexual Content", "illegal"),
-        ("adult-cinematic", "B. Real-World Crimes & Public Safety", "flagged"),
         # `default`'s A is all sexual content, adult nudity included, so it can only send to review.
         ("default", "A. Sexual Content Risk", "flagged"),
         ("default", "B. Real-World Crimes & Public Safety", "flagged"),
@@ -108,7 +106,7 @@ def test_unsafe_with_no_rule_named_is_flagged_not_illegal() -> None:
 
 
 def test_a_safe_verdict_is_safe_under_every_policy() -> None:
-    for policy in ("default", "adult", "adult-granular", "adult-cautious", "adult-cinematic"):
+    for policy in ("default", "adult", "adult-granular", "adult-cautious"):
         assert classify(policy, GuardResult(safe=True)).state == "safe"
 
 

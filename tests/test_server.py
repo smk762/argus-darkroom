@@ -71,7 +71,7 @@ def test_health(rig) -> None:
     assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": True, "ollama": False, "age": False}
     assert body["default_policy"] == "default" and body["thinking"] == "cascade" and body["generating"] is False
     assert body["nsfw_allowed"] is False and body["devmode"] is False and body["sfw_available"] is True
-    assert body["policies"] == ["default", "adult", "adult-granular", "adult-cautious", "adult-cinematic"]
+    assert body["policies"] == ["default", "adult", "adult-granular", "adult-cautious"]
     assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
 
@@ -98,7 +98,7 @@ def test_policies_mark_nsfw_as_not_enforceable_without_the_flag(rig) -> None:
     assert by_name["adult-granular"]["illegal_rules"] == [
         {"code": "A", "name": "Minors"},
         {"code": "H", "name": "Non-Consensual Sexual Content"},
-        {"code": "I", "name": "Sexual Violence"},
+        {"code": "I", "name": "Sexual Violence & Extreme Content"},
     ]
     assert all(p["summary"] for p in body["policies"])
     assert by_name["default"]["illegal_rules"] == [] and by_name["default"]["text"] is None
