@@ -101,6 +101,16 @@ def test_http_estimator_rejects_a_non_estimate(years) -> None:
         HttpAgeEstimator(fake.url).estimate(b"x")
 
 
+@pytest.mark.parametrize("years", [float("nan"), float("inf"), True, -1])
+def test_http_estimator_rejects_a_non_estimate_for_an_unmatched_person(years) -> None:
+    person = {"age_estimate_years": years, "bbox": [0, 0, 10, 20], "face_index": None}
+    with (
+        FakeFaces(people=[person], people_check="ok") as fake,
+        pytest.raises(AgeUnavailable, match="person without an estimate"),
+    ):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
 def test_remote_status_server_error_is_unavailable_whatever_the_body() -> None:
     with FakeFaces(health_status=503) as fake:
         status = remote_age_status(fake.url)
