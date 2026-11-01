@@ -65,3 +65,17 @@ def test_from_env_reads_age_url(monkeypatch) -> None:
     monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
     monkeypatch.setenv("ARGUS_DARKROOM_AGE_URL", "http://curator:8101")
     assert Settings.from_env().age_url == "http://curator:8101"
+
+
+@pytest.mark.parametrize("years", [float("nan"), float("inf"), True, -1])
+def test_http_estimator_rejects_a_non_estimate(years) -> None:
+    face = {"age_estimate_years": years, "bbox": [1, 2, 3, 4]}
+    with FakeFaces(faces=[face]) as fake, pytest.raises(AgeUnavailable, match="without an estimate"):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
+def test_remote_status_server_error_is_unavailable_whatever_the_body() -> None:
+    with FakeFaces(health_status=503) as fake:
+        status = remote_age_status(fake.url)
+    assert not status.available
+    assert "503" in (status.reason or "")

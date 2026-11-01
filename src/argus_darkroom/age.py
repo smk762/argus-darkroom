@@ -11,6 +11,7 @@ such everywhere it appears. It is never sent to SingGuard as context.
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -43,21 +44,24 @@ class AgeStatus:
     reason: str | None = None  # why not, for /health
 
 
-def _opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def remote_age_status(base_url: str) -> AgeStatus:
     """Whether curator's ``POST /faces`` can run: ``GET /health`` reports ``faces`` or ``mivolo``."""
     url = base_url.rstrip("/") + "/health"
     try:
-        with _opener().open(url, timeout=PROBE_TIMEOUT) as resp:
+        with _OPENER.open(url, timeout=PROBE_TIMEOUT) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        # Any HTTP answer means the server is up; still need faces/mivolo in the body.
-        raw = exc.read() if exc.fp is not None else b""
-        if exc.code >= 500 and not raw:
+        # A server error cannot vouch for the check, whatever its body says.
+        if exc.code >= 500:
             return AgeStatus(False, f"AGE_URL /health returned HTTP {exc.code}")
+        # Any other HTTP answer means the server is up; still need faces/mivolo in the body.
+        try:
+            raw = exc.read()
+        except (OSError, ValueError):
+            raw = b""
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return AgeStatus(False, "AGE_URL did not answer")
     try:
@@ -77,6 +81,7 @@ class HttpAgeEstimator:
     """MiVOLO estimates from curator's ``POST /faces``. The buffer is posted; nothing is written here."""
 
     def __init__(self, base_url: str, timeout: float = CHECK_TIMEOUT) -> None:
+        self.base_url = base_url
         self.url = base_url.rstrip("/") + "/faces?body=true"
         self.timeout = timeout
 
@@ -88,10 +93,13 @@ class HttpAgeEstimator:
             headers={"Content-Type": "application/octet-stream"},
         )
         try:
-            with _opener().open(req, timeout=self.timeout) as resp:
+            with _OPENER.open(req, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:200]
+            except (OSError, ValueError):
+                detail = ""
             raise AgeUnavailable(f"age check returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
             raise AgeUnavailable(f"age check failed: {exc}") from exc
@@ -101,13 +109,24 @@ class HttpAgeEstimator:
 def _faces_from_payload(payload: object) -> list[FaceAge]:
     if not isinstance(payload, dict) or not isinstance(payload.get("faces"), list):
         raise AgeUnavailable("age check returned no faces list")
+    if payload.get("source", "mivolo") != "mivolo":
+        raise AgeUnavailable(f"age check source was {payload.get('source')!r}, not mivolo")
     faces: list[FaceAge] = []
     for item in payload["faces"]:
         if not isinstance(item, dict):
             raise AgeUnavailable("age check returned a malformed face")
         years = item.get("age_estimate_years")
         bbox = item.get("bbox")
-        if not isinstance(years, (int, float)) or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        # bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and NaN < 18 is False, so
+        # accepting one would let the minors rule silently not fire.
+        if (
+            isinstance(years, bool)
+            or not isinstance(years, (int, float))
+            or not math.isfinite(years)
+            or years < 0
+            or not isinstance(bbox, (list, tuple))
+            or len(bbox) != 4
+        ):
             raise AgeUnavailable("age check returned a face without an estimate")
         try:
             box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
