@@ -385,6 +385,51 @@ def test_a_face_with_no_estimate_makes_the_check_unavailable_for_the_image() -> 
         CuratorAgeEstimator(fake_detect(30.0, None)).estimate(b"x")
 
 
+def fake_detect_people(*people: tuple[float | None, int | None, str | None], check: str | None = "ok"):
+    """``detect_faces`` that fills ``ImageResult.people`` as ``(age_years, face_index, age_source)``."""
+    from argus_curator.models import PersonDetection
+
+    def detect(results, items, cfg, **kw):
+        results[0].people_check = check
+        for age, face_index, source in people:
+            results[0].people.append(
+                PersonDetection(
+                    bbox=[0, 0, 40, 80], det_score=0.9, face_index=face_index, age_years=age, age_source=source
+                )
+            )
+
+    return detect
+
+
+def test_an_unmatched_person_with_an_estimate_counts_as_a_face() -> None:
+    faces = CuratorAgeEstimator(fake_detect_people((15.0, None, "mivolo"))).estimate(b"x")
+    assert [(f.age_estimate_years, f.bbox) for f in faces] == [(15.0, (0, 0, 40, 80))]
+
+
+@pytest.mark.parametrize("person", [(None, None, None), (float("nan"), None, "mivolo"), (15.0, None, "fairface")])
+def test_an_unmatched_person_with_no_estimate_makes_the_check_unavailable(person) -> None:
+    with pytest.raises(AgeUnavailable, match="no age for a detected person"):
+        CuratorAgeEstimator(fake_detect_people(person)).estimate(b"x")
+
+
+def test_an_unknown_people_check_makes_the_check_unavailable() -> None:
+    with pytest.raises(AgeUnavailable, match="mystery"):
+        CuratorAgeEstimator(fake_detect_people(check="mystery")).estimate(b"x")
+
+
+def test_a_faceless_person_with_no_estimate_records_no_age_check(rig) -> None:
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    with FakeFaces(
+        faces=[],
+        people=[{"age_estimate_years": None, "bbox": [0, 0, 40, 80], "face_index": None}],
+        people_check="ok",
+    ) as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    # Not "checked, no minor": the record says the age check did not run for this image.
+    assert record.guard.age is None
+
+
 def test_a_failing_detector_is_unavailable() -> None:
     def detect(*a, **k):
         raise RuntimeError("onnx exploded")

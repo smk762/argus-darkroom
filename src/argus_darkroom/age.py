@@ -131,8 +131,10 @@ def _faces_from_payload(payload: object) -> list[FaceAge]:
     Curator 0.10 ``POST /faces?body=true`` returns body-only ages in ``people``.
     Those must feed ``minor_exposed``: a faceless minor is still a minor.
     ``people_check`` other than ``ok`` means an empty list is not "none found".
-    Matched people duplicate a face and are skipped. A person with no estimate
-    is skipped so partial body evidence cannot fail the face list.
+    Matched people duplicate a face and are skipped. An unmatched person with no
+    estimate makes the whole check unavailable, as a face with none does: that
+    person could be a minor, and skipping them would let ``minor_exposed`` pass
+    on evidence it never had.
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("faces"), list):
         raise AgeUnavailable("age check returned no faces list")
@@ -154,8 +156,6 @@ def _faces_from_payload(payload: object) -> list[FaceAge]:
         if not isinstance(item, dict):
             raise AgeUnavailable("age check returned a malformed person")
         if item.get("face_index") is not None:
-            continue
-        if item.get("age_estimate_years") is None:
             continue
         faces.append(_face_from_item(item, "person"))
     return faces
@@ -189,6 +189,8 @@ class CuratorAgeEstimator:
         if check in _PEOPLE_CHECK_FAILED:
             detail = getattr(result, "people_error", None) or check
             raise AgeUnavailable(f"people check {check}: {detail}")
+        if check is not None and check != "ok":
+            raise AgeUnavailable(f"people check {check!r}")
         faces: list[FaceAge] = []
         for face in result.faces:
             attrs = face.attributes
@@ -203,8 +205,11 @@ class CuratorAgeEstimator:
             if getattr(person, "face_index", None) is not None:
                 continue
             body_years = getattr(person, "age_years", None)
-            if body_years is None:
-                continue
+            if getattr(person, "age_source", None) not in (None, "mivolo"):
+                body_years = None
+            if body_years is None or not math.isfinite(body_years) or body_years < 0:
+                # As for a face: an unmatched person with no estimate could be a minor.
+                raise AgeUnavailable("MiVOLO gave no age for a detected person")
             x, y, w, h = person.bbox
             faces.append(FaceAge(age_estimate_years=float(body_years), bbox=(x, y, w, h)))
         return faces
