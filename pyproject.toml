@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
     # [server] is for env_flag, which the config reads even without the HTTP server
-    "argus-cortex[images,server]>=0.4.3,<0.5",
+    "argus-cortex[images,server]>=0.4.5,<0.5",
     "pydantic>=2.7",
     # ComfyUI returns the image over its websocket; stdlib has no client
     "websockets>=15",
