@@ -196,6 +196,14 @@ demo.
 
 ## Age check (optional)
 
+The age check is an extra signal on top of SingGuard's minors rule, never a replacement for it. SingGuard judges every
+image for itself, with or without an estimate: rule A of each adult policy covers anyone who appears to be a minor. So
+when the age check is missing, that rule still applies.
+
+The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own: an estimate under 18
+on an image where NudeNet scores an exposed class at 0.2 or more deletes the image (`minor-exposed`). Without exposure
+it is only recorded and shown.
+
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,
 not as "no one found", and so is an unmatched person with no estimate. An unavailable age check never deletes on its
