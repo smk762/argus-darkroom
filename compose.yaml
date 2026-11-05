@@ -22,6 +22,7 @@ services:
       ARGUS_DARKROOM_THINKING: ${THINKING:-cascade}
       ARGUS_DARKROOM_ALLOW_NSFW: ${ALLOW_NSFW:-0}
       ARGUS_DARKROOM_DEVMODE: ${DEVMODE:-0}
+      ARGUS_DARKROOM_READ_ONLY: ${READ_ONLY:-0}
       ARGUS_DARKROOM_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     volumes:
       - darkroom-data:/data

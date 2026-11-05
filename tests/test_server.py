@@ -16,7 +16,7 @@ from rig import ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
 from argus_darkroom.comfyui import ComfyUIClient
-from argus_darkroom.config import ConfigError
+from argus_darkroom.config import ConfigError, Settings
 from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 from argus_darkroom.server.app import POLICY_SUMMARIES
@@ -73,6 +73,7 @@ def test_health(rig) -> None:
     assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": True, "ollama": False, "age": False}
     assert body["default_policy"] == "default" and body["thinking"] == "cascade" and body["generating"] is False
     assert body["nsfw_allowed"] is False and body["devmode"] is False and body["sfw_available"] is True
+    assert body["read_only"] is False
     assert body["policies"] == list(policy_table.POLICIES)
     assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
@@ -450,6 +451,43 @@ def test_a_cross_site_write_is_refused_and_a_cross_site_read_is_not_granted(rig)
     read = c.get("/records", headers=EVIL)
     assert read.status_code == 200 and "access-control-allow-origin" not in read.headers
     assert c.delete("/record/" + "0" * 32, headers=EVIL).status_code == 403
+
+
+def test_read_only_is_a_boolean_on_health_and_comes_from_the_environment(rig, monkeypatch) -> None:
+    assert client(rig, read_only=True).get("/health").json()["read_only"] is True
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.delenv("ARGUS_DARKROOM_READ_ONLY", raising=False)
+    assert Settings.from_env().read_only is False
+    monkeypatch.setenv("ARGUS_DARKROOM_READ_ONLY", "1")
+    assert Settings.from_env().read_only is True
+
+
+def test_read_only_refuses_every_write_before_it_reaches_a_backend(rig) -> None:
+    c = client(rig, read_only=True, devmode=True)
+    origin = {"Origin": "http://localhost:3000"}  # a trusted origin: read-only outranks it
+    calls = [
+        lambda h: c.post("/preflight", json=BODY, headers=h),
+        lambda h: c.post("/generate/stream", json=BODY, headers=h),
+        lambda h: c.delete("/record/" + "0" * 32, headers=h),
+        lambda h: c.post("/purge", json={"confirm": "purge"}, headers=h),
+    ]
+    for call in calls:
+        for headers in ({}, origin):
+            r = call(headers)
+            assert r.status_code == 403 and "read-only" in r.json()["detail"]
+    assert rig.singguard.requests == []
+    # CORS stays outermost, so a browser can read the refusal.
+    assert c.post("/preflight", json=BODY, headers=origin).headers["access-control-allow-origin"] == origin["Origin"]
+
+
+def test_read_only_keeps_records_and_images_readable(rig) -> None:
+    record = generate(client(rig))
+    c = client(rig, read_only=True)
+    assert c.delete("/record/" + record["id"]).status_code == 403
+    assert c.get("/image/" + record["id"]).status_code == 200
+    assert c.get("/record/" + record["id"]).json()["removed_at"] is None
+    assert c.get("/records").status_code == 200 and c.get("/policies").status_code == 200
+    assert c.get("/archive").status_code == 200
 
 
 def test_the_configured_origin_may_read_and_write(rig) -> None:
