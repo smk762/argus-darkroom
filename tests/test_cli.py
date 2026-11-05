@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,14 @@ from argus_darkroom import cli
 from argus_darkroom.cli import app
 
 runner = CliRunner()
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(output: str) -> str:
+    """Rich's error panel as one line: Typer forces colour on GitHub Actions, and the panel wraps and has borders."""
+    return " ".join(ANSI.sub("", output).replace("│", " ").split())
+
+
 SAMPLING = [
     "--sampler",
     "euler",
@@ -116,7 +125,7 @@ def test_generate_reports_a_request_error(monkeypatch, rig) -> None:
 
 def test_the_sampling_options_have_no_invented_defaults() -> None:
     result = runner.invoke(app, ["generate", "a cat", "--checkpoint", "x"])
-    assert result.exit_code == 2 and "--sampler" in result.output
+    assert result.exit_code == 2 and "--sampler" in plain(result.output)
 
 
 @pytest.mark.parametrize(
@@ -129,7 +138,7 @@ def test_the_sampling_options_have_no_invented_defaults() -> None:
 )
 def test_lora_and_trigger_options_are_checked(args, message) -> None:
     result = gen(*args)
-    assert result.exit_code == 2 and message in result.output
+    assert result.exit_code == 2 and message in plain(result.output)
 
 
 def test_serve_refuses_to_start_without_singguard(monkeypatch) -> None:
