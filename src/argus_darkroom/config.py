@@ -34,6 +34,7 @@ class Settings:
     workflow: Path | None = None
     allow_nsfw: bool = False
     devmode: bool = False
+    read_only: bool = False  # refuse every write; /health reports it
     # Origins allowed to read and, if named, to write. ``*`` allows anonymous reads from anywhere, never writes.
     cors_origins: tuple[str, ...] = LOCAL_ORIGINS
 
@@ -81,5 +82,6 @@ class Settings:
             workflow=Path(p) if (p := get("WORKFLOW")) else None,
             allow_nsfw=allow_nsfw,
             devmode=env_flag(PREFIX + "DEVMODE"),
+            read_only=env_flag(PREFIX + "READ_ONLY"),
             cors_origins=tuple(o.strip() for o in get("CORS_ORIGINS").split(",") if o.strip()) or LOCAL_ORIGINS,
         )

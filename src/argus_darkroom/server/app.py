@@ -1,7 +1,7 @@
 """The darkroom FastAPI server.
 
 ========================  =====================================================================================
-``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``
+``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
 ``GET /models``           checkpoints, LoRAs and VAEs found under the models root
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
@@ -15,6 +15,7 @@
 
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
 ``cross_site_refuse``, because CORS alone is not a write boundary). The server binds to localhost by default.
+With ``ARGUS_DARKROOM_READ_ONLY=1`` every write is refused from every origin, ``POST /preflight`` included.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ from typing import Literal
 
 import structlog
 from argus_cortex.moderation import policies as policy_table
-from argus_cortex.server import WriteGuard, cross_site_refuse
+from argus_cortex.server import WriteGuard, constant_refuse, cross_site_refuse
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,6 +70,7 @@ def probe(url: str) -> bool:
     return True
 
 
+READ_ONLY_REFUSAL = "argus-darkroom is read-only: generation, pre-flight and record changes are disabled"
 POLICY_SUMMARIES = {
     "default": "SingGuard's own rules, which treat sexual content as a risk. The SFW policy: with no illegal rules, "
     "it can only send an image to review.",
@@ -126,6 +128,10 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     named = [o for o in cfg.cors_origins if o != "*"]
     # A wildcard grants anonymous reads, never a cross-site write: naming an origin is the way to get those.
     app.add_middleware(WriteGuard, refuse=cross_site_refuse(named))
+    if cfg.read_only:
+        # Method-based, so it covers every write route, current and future, and POST /preflight, which writes nothing
+        # but spends a SingGuard call. Added before CORS so that CORS stays outermost and a 403 keeps its headers.
+        app.add_middleware(WriteGuard, refuse=constant_refuse(READ_ONLY_REFUSAL))
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if wildcard else named,
@@ -169,6 +175,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "expansion_enabled": cfg.expansion_enabled,
             "workflow_loaded": engine.workflow is not None,
             "devmode": cfg.devmode,
+            "read_only": cfg.read_only,
             "generating": busy.locked(),
         }
 
