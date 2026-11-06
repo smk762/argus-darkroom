@@ -115,8 +115,9 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `WORKFLOW` | | The template path. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | May read and write. `*` allows reads only. |
 | `DEVMODE` | off | Adds `POST /purge`. |
+| `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and `POST /purge`. Records and images stay readable. |
 
-`ALLOW_NSFW` and `DEVMODE` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
+`ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
 
 Policies are chosen by name (`default`, `adult`, `adult-granular`, `adult-cautious`, `adult-cinematic`); a request cannot carry policy
 text. `default` and `sfw-*` are SFW, the rest NSFW. SFW refuses on any pre-flight flag and omits exposed output. NSFW
@@ -144,7 +145,7 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, age-check status |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status |
 | `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
 | `GET /models` | checkpoints and LoRAs as `{name}` objects, plus the samplers and schedulers ComfyUI offers |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
@@ -194,6 +195,14 @@ trust. No real content is involved; the verdicts are canned.
 demo.
 
 ## Age check (optional)
+
+The age check is an extra signal on top of SingGuard's minors rule, never a replacement for it. SingGuard judges every
+image for itself, with or without an estimate: rule A of each adult policy covers anyone who appears to be a minor. So
+when the age check is missing, that rule still applies.
+
+The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own: an estimate under 18
+on an image where NudeNet scores an exposed class at 0.2 or more deletes the image (`minor-exposed`). Without exposure
+it is only recorded and shown.
 
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,

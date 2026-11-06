@@ -183,7 +183,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 
 **Server** (`argus-darkroom serve --port 8106 --output-root …`):
 
-- `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`.
+- `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`, `read_only`.
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root.
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
@@ -195,7 +195,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `POST /purge`: deletes every record and stored image, and clears darkroom's prompts from ComfyUI's history. A clean slate. It exists only when `ARGUS_DARKROOM_DEVMODE=1`, and answers 404 otherwise, so hiding the button is not the only thing preventing a purge. The body must be `{"confirm": "purge"}`. A purge during a generation gets HTTP 409. `/health` reports `devmode`.
 - `WriteGuard` and `cross_site_refuse` from cortex. CORS allows reads by default; writes are allowed only from the configured origins (`ARGUS_DARKROOM_CORS_ORIGINS`).
 
-**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`. Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and both flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
+**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
 
 **Store:** one flat `<id>.json` per record, the same pattern as curator's `ScanStore`. Images go under `<output_root>/<id>.png`.
 
