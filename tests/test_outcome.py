@@ -94,7 +94,7 @@ def test_review_reason_lists_flagged_rules() -> None:
         ("adult-cautious", "B. Real-World Crimes & Public Safety", "flagged"),
         ("adult-cinematic", "A. Illegal Sexual Content", "illegal"),
         ("adult-cinematic", "G. Criminal Instructions", "flagged"),
-        ("adult-cinematic", "B. Animal Abuse", "flagged"),
+        ("adult-cinematic", "F. Animal Abuse", "flagged"),
         # `default`'s A is all sexual content, adult nudity included, so it can only send to review.
         ("default", "A. Sexual Content Risk", "flagged"),
         ("default", "B. Real-World Crimes & Public Safety", "flagged"),

@@ -77,7 +77,8 @@ POLICY_SUMMARIES = {
     "separate illegal rules.",
     "adult-cautious": "Like adult, but unclear age or unclear consent counts as rule A.",
     "adult-cinematic": "Like adult: legal adult entertainment is Safe. Depicted crime and violence are Safe with no "
-    "sign of fiction needed; rule G covers how-to and real targeting, and rule B is animal abuse. Rule A is illegal.",
+    "sign of fiction needed; rule G covers how-to and real targeting, and B to F sit one letter up from adult. "
+    "Rule A is illegal.",
 }
 _RULE_HEADING = re.compile(r"^### ([A-Z])\. (.+)$", re.MULTILINE)
 
