@@ -17,3 +17,16 @@ jobs:
       ruff-version: "0.15.16"
       test-extras: "dev"
 
+  # The wire schema is a contract other repos generate code from: a model change must come with the regenerated file.
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # hatch-vcs reads the version from git history
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv venv && uv pip install -e ".[cli]"
+      - run: uv run --no-sync argus-darkroom schema --check
+

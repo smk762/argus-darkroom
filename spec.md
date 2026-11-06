@@ -20,7 +20,7 @@ Do not rebuild these.
 - **Ollama** (`:11434`), optional, expands a short prompt. It is never a guard.
 - **SingGuard server**: agent-composer's `/api/guard/check` (`:9150`, Ollama GGUF `SingGuard-4b`). It accepts `input`, an optional `image_base64`, `input_role`, `policy` text and `thinking` (`fast`, `fast-slow`, `slow`, `cascade`), and answers `{safe, verdict, rule, rule_text, explanation, categories, model, thinking, elapsed_ms}`. A text-only check (no image) is how pre-flight works. Darkroom depends on that PR (agent-composer #4) being merged. A separate argus moderation-service package may replace it later; the client must not care which.
 - **NudeNet server**, over HTTP. Never imported (AGPL).
-- **argus-cortex** (`>=0.4.2,<0.5`):
+- **argus-cortex** (`>=0.4.6,<0.5`):
   - `moderation.SingGuardClient` / `NudeNetClient` / `exposed_score`.
   - New in 0.4.2: `SingGuardClient.check_text()`, and `moderation.policies`: the named policy texts (moved from curator's `guard.py`) and the per-policy table of illegal rules.
   - `server.WriteGuard` / `cross_site_refuse` / `env_flag`.
@@ -50,7 +50,7 @@ The comparison between the isolated scan and the with-prompt scan is the point o
 - Requests name policies; they never send policy text. The names come from `argus_cortex.moderation.policies`.
 - **Enforcing policy:** one per request. Its verdict decides pre-flight, and its name sets the [mode](#mode). The server default (`ARGUS_DARKROOM_POLICY`) is `adult-granular` when NSFW is allowed, and `default` when it is not.
 - **Advisory policies:** zero or more extra policies run for comparison. They never block or release an image, except that an illegal rule under any policy still deletes.
-- During development, all four names are available: `default`, `adult`, `adult-granular` and `adult-cautious`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
+- During development, all five names are available: `default`, `adult`, `adult-granular`, `adult-cautious` and `adult-cinematic`. At release only `default` and one adult policy remain, whichever adult variant the ongoing evaluation picks. The default moves to that one.
 - "Configurable" means picking the enforcing and advisory policies and the thinking mode. SingGuard returns a verdict, not a score, so it has no threshold to tune. The NudeNet threshold is a real number and is configurable (see [Verdicts](#verdicts)).
 
 ### Mode
@@ -77,8 +77,8 @@ Each policy has its own table, because rule letters mean different things under 
 
 | Policy | Illegal (delete) | Everything else |
 |---|---|---|
-| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence & Extreme | review |
-| `adult`, `adult-cautious` | A Illegal or Extreme Sexual Content | review |
+| `adult-granular` | A Minors, H Non-Consensual, I Sexual Violence | review |
+| `adult`, `adult-cautious`, `adult-cinematic` | A Illegal Sexual Content | review |
 | `default` | none | review |
 
 Under SingGuard's own `default` rules, A is "Sexual Content Risk", which also covers consensual adult nudity. Treating it as illegal would delete every adult image whenever `default` is chosen for comparison, so `default` can only send an image to review. B (Real-World Crimes) and G (Animal Abuse) go to review, not deletion, under every policy. The table lives in cortex next to the policy texts, so a policy and its illegal rules cannot drift apart.
@@ -183,7 +183,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 
 **Server** (`argus-darkroom serve --port 8106 --output-root …`):
 
-- `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`.
+- `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`, `read_only`.
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root.
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
@@ -195,7 +195,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `POST /purge`: deletes every record and stored image, and clears darkroom's prompts from ComfyUI's history. A clean slate. It exists only when `ARGUS_DARKROOM_DEVMODE=1`, and answers 404 otherwise, so hiding the button is not the only thing preventing a purge. The body must be `{"confirm": "purge"}`. A purge during a generation gets HTTP 409. `/health` reports `devmode`.
 - `WriteGuard` and `cross_site_refuse` from cortex. CORS allows reads by default; writes are allowed only from the configured origins (`ARGUS_DARKROOM_CORS_ORIGINS`).
 
-**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`. Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and both flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
+**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
 
 **Store:** one flat `<id>.json` per record, the same pattern as curator's `ScanStore`. Images go under `<output_root>/<id>.png`.
 

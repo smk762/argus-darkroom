@@ -1,0 +1,680 @@
+{
+  "$defs": {
+    "AgeRecord": {
+      "properties": {
+        "faces": {
+          "items": {
+            "$ref": "#/$defs/FaceAge"
+          },
+          "title": "Faces",
+          "type": "array"
+        },
+        "minor_exposed": {
+          "default": false,
+          "title": "Minor Exposed",
+          "type": "boolean"
+        },
+        "source": {
+          "const": "mivolo",
+          "default": "mivolo",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "title": "AgeRecord",
+      "type": "object"
+    },
+    "Cell": {
+      "description": "One policy's verdict in one context: a state, and the SingGuard answer or the error behind it.",
+      "properties": {
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuardResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "state": {
+          "enum": [
+            "safe",
+            "flagged",
+            "illegal",
+            "unchecked"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "Cell",
+      "type": "object"
+    },
+    "Expansion": {
+      "description": "How Ollama expanded the prompt: enough to know which system prompt was used.",
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "system_prompt_sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "System Prompt Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "system_prompt_sha256"
+      ],
+      "title": "Expansion",
+      "type": "object"
+    },
+    "FaceAge": {
+      "description": "A MiVOLO age estimate for one detected face. A tool's estimate, never a stated age.",
+      "properties": {
+        "age_estimate_years": {
+          "title": "Age Estimate Years",
+          "type": "number"
+        },
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        }
+      },
+      "required": [
+        "age_estimate_years",
+        "bbox"
+      ],
+      "title": "FaceAge",
+      "type": "object"
+    },
+    "GenerationRecord": {
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "critical": {
+          "default": false,
+          "title": "Critical",
+          "type": "boolean"
+        },
+        "darkroom_version": {
+          "title": "Darkroom Version",
+          "type": "string"
+        },
+        "guard": {
+          "$ref": "#/$defs/GuardRecord"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImageRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "outcome": {
+          "enum": [
+            "refused",
+            "passed",
+            "review",
+            "deleted",
+            "omitted",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "outcome_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome Reason"
+        },
+        "record_version": {
+          "default": "1.0",
+          "title": "Record Version",
+          "type": "string"
+        },
+        "removed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Removed At"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestRecord"
+        }
+      },
+      "required": [
+        "id",
+        "darkroom_version",
+        "outcome",
+        "request",
+        "guard"
+      ],
+      "title": "GenerationRecord",
+      "type": "object"
+    },
+    "GuardRecord": {
+      "properties": {
+        "advisory_policies": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Advisory Policies",
+          "type": "array"
+        },
+        "age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "enforcing_policy": {
+          "title": "Enforcing Policy",
+          "type": "string"
+        },
+        "nudenet": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NudeNetRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "preflight": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Cell"
+          },
+          "title": "Preflight",
+          "type": "object"
+        },
+        "scans": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScanCells"
+          },
+          "title": "Scans",
+          "type": "object"
+        },
+        "thinking": {
+          "title": "Thinking",
+          "type": "string"
+        }
+      },
+      "required": [
+        "enforcing_policy",
+        "thinking"
+      ],
+      "title": "GuardRecord",
+      "type": "object"
+    },
+    "GuardResult": {
+      "description": "SingGuard's verdict on one image. A verdict, not a score: SingGuard\nreports which policy rules fired, not how confident it is.",
+      "properties": {
+        "explanation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Explanation"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "policy": {
+          "default": "default",
+          "title": "Policy",
+          "type": "string"
+        },
+        "rules": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rules",
+          "type": "array"
+        },
+        "safe": {
+          "title": "Safe",
+          "type": "boolean"
+        },
+        "thinking": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Thinking"
+        }
+      },
+      "required": [
+        "safe"
+      ],
+      "title": "GuardResult",
+      "type": "object"
+    },
+    "ImageRecord": {
+      "description": "The identity of the output. The hashes are kept even when the pixels are not.",
+      "properties": {
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "phash": {
+          "title": "Phash",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "phash",
+        "width",
+        "height"
+      ],
+      "title": "ImageRecord",
+      "type": "object"
+    },
+    "LoRARef": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "trigger_words": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trigger Words",
+          "type": "array"
+        },
+        "weight": {
+          "default": 1.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "title": "LoRARef",
+      "type": "object"
+    },
+    "ModelRef": {
+      "description": "A model file pinned by content: the name the engine loads and its sha256.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "sha256"
+      ],
+      "title": "ModelRef",
+      "type": "object"
+    },
+    "NudeNetRecord": {
+      "description": "What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not\nconfigured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it.",
+      "properties": {
+        "blur": {
+          "title": "Blur",
+          "type": "boolean"
+        },
+        "exposed_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Exposed Score"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Labels",
+          "type": "object"
+        },
+        "threshold": {
+          "title": "Threshold",
+          "type": "number"
+        }
+      },
+      "required": [
+        "exposed_score",
+        "threshold",
+        "blur"
+      ],
+      "title": "NudeNetRecord",
+      "type": "object"
+    },
+    "RequestRecord": {
+      "description": "What was asked for. ``final_prompt`` is the exact string ComfyUI receives.",
+      "properties": {
+        "checkpoint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "engine": {
+          "const": "comfyui",
+          "default": "comfyui",
+          "title": "Engine",
+          "type": "string"
+        },
+        "engine_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine Version"
+        },
+        "expanded_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expanded Prompt"
+        },
+        "expansion": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Expansion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "final_prompt": {
+          "title": "Final Prompt",
+          "type": "string"
+        },
+        "loras": {
+          "items": {
+            "$ref": "#/$defs/LoRARef"
+          },
+          "title": "Loras",
+          "type": "array"
+        },
+        "mode": {
+          "enum": [
+            "sfw",
+            "nsfw"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "negative_prompt": {
+          "default": "",
+          "title": "Negative Prompt",
+          "type": "string"
+        },
+        "sampling": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SamplingParams"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "user_prompt": {
+          "title": "User Prompt",
+          "type": "string"
+        },
+        "vae": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "workflow_sha256": {
+          "anyOf": [
+            {
+              "description": "lowercase hex SHA256 digest",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow Sha256"
+        }
+      },
+      "required": [
+        "mode",
+        "user_prompt",
+        "final_prompt"
+      ],
+      "title": "RequestRecord",
+      "type": "object"
+    },
+    "SamplingParams": {
+      "properties": {
+        "cfg": {
+          "title": "Cfg",
+          "type": "number"
+        },
+        "clip_skip": {
+          "default": 1,
+          "title": "Clip Skip",
+          "type": "integer"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "sampler": {
+          "title": "Sampler",
+          "type": "string"
+        },
+        "scheduler": {
+          "title": "Scheduler",
+          "type": "string"
+        },
+        "steps": {
+          "exclusiveMinimum": 0,
+          "title": "Steps",
+          "type": "integer"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sampler",
+        "scheduler",
+        "steps",
+        "cfg",
+        "width",
+        "height"
+      ],
+      "title": "SamplingParams",
+      "type": "object"
+    },
+    "ScanCells": {
+      "description": "One policy's two image scans: alone, and alongside the prompt that made the image.",
+      "properties": {
+        "isolated": {
+          "$ref": "#/$defs/Cell"
+        },
+        "with_prompt": {
+          "$ref": "#/$defs/Cell"
+        }
+      },
+      "required": [
+        "isolated",
+        "with_prompt"
+      ],
+      "title": "ScanCells",
+      "type": "object"
+    }
+  },
+  "title": "argus-darkroom wire contract"
+}
