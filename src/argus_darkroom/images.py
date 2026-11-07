@@ -29,11 +29,10 @@ def describe(data: bytes) -> ImageRecord:
         with Image.open(io.BytesIO(data)) as img:
             img.load()
             width, height = img.size
-            if all(low == high for low, high in img.convert("RGB").getextrema()):
-                raise BlankImage("the render came back blank: every pixel is the same colour")
+            blank = all(low == high for low, high in img.convert("RGB").getextrema())
             phash = str(imagehash.phash(img, hash_size=8))
-    except BlankImage:
-        raise
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         raise UnreadableImage(f"the image cannot be decoded: {exc}") from exc
+    if blank:
+        raise BlankImage("the render came back blank: every pixel is the same colour")
     return ImageRecord(sha256=hashlib.sha256(data).hexdigest(), phash=phash, width=width, height=height)

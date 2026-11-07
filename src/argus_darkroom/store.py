@@ -65,14 +65,22 @@ class RecordStore:
     def remove_image(self, record_id: str) -> None:
         self.image_path(record_id).unlink(missing_ok=True)
 
+    def exists(self, record_id: str) -> bool:
+        """Whether *record_id* has a record file, readable or not."""
+        return valid_id(record_id) and self.record_path(record_id).is_file()
+
     def delete(self, record_id: str) -> int:
-        """Remove a record and any image it kept. The number of images removed, 0 or 1."""
-        self.record_path(record_id).unlink(missing_ok=True)
-        path = self.image_path(record_id)
-        if not path.is_file():
-            return 0
-        path.unlink(missing_ok=True)
-        return 1
+        """Remove a record, any image it kept and what a crash left. The number of images removed, 0 or 1.
+
+        The image goes first: if a removal fails, the record stays to find it by, rather than an image with no record.
+        """
+        record, image = self.record_path(record_id), self.image_path(record_id)
+        kept = image.is_file()
+        self.remove_image(record_id)
+        image.with_suffix(".png.tmp").unlink(missing_ok=True)
+        record.with_suffix(".json.tmp").unlink(missing_ok=True)
+        record.unlink(missing_ok=True)
+        return int(kept)
 
     def load(self, record_id: str) -> GenerationRecord | None:
         if not valid_id(record_id):

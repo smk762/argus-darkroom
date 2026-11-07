@@ -3,7 +3,7 @@
 ========================  =====================================================================================
 ``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
-``GET /models``           checkpoints, LoRAs and VAEs found under the models root
+``GET /models``           checkpoints, LoRAs and VAEs found under the models root, and ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
 ``POST /generate/stream`` SSE: ``preflight``, ``queued``, ``progress``, ``scan``, ``complete``; one at a time
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
@@ -11,6 +11,7 @@
 ``DELETE /record/{id}``   the user removing their own output: the file goes, the record stays
 ``GET /archive``          a streamed zip of every record and every stored image (read-only, always on)
 ``POST /purge``           everything, from a clean slate; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
+``POST /purge/{id}``      one record and its image; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ========================  =====================================================================================
 
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
@@ -205,7 +206,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
 
     @app.get("/models")
-    async def models() -> dict:
+    def models() -> dict:
         try:
             checkpoints = engine.models.names("checkpoint")
             found = {
@@ -217,7 +218,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         except RequestError as exc:
             raise HTTPException(400, str(exc)) from exc
         # What ComfyUI accepts, so the form offers only values that run (empty when ComfyUI does not say).
-        return found | await run_in_threadpool(engine.comfyui.sampling_choices)
+        return found | engine.comfyui.sampling_choices()
 
     # -- pre-flight and generation -----------------------------------------------------------------------
     @app.post("/preflight")
@@ -363,7 +364,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             if not busy.acquire(blocking=False):
                 raise HTTPException(409, "a generation is running")
             try:
-                record_or_404(record_id)
+                # Not parsed: a record that no longer reads is one this must still be able to remove.
+                if not engine.store.exists(record_id):
+                    raise HTTPException(404, "no such record")
                 return {"records": 1, "images": engine.store.delete(record_id)}
             finally:
                 busy.release()

@@ -144,6 +144,7 @@ def test_models_names_the_configured_default(rig) -> None:
         ("sd", None),  # a folder, not a prefix of one
         ("missing", None),
         ("", None),
+        ("/", None),
     ],
 )
 def test_pick_default(preferred: str, expected: str | None) -> None:
@@ -486,6 +487,39 @@ def test_purging_one_record_with_no_image_counts_none(rig) -> None:
     refused = generate(c)
     assert refused["outcome"] == "refused"
     assert c.post(f"/purge/{refused['id']}", json={"confirm": "purge"}).json() == {"records": 1, "images": 0}
+
+
+def test_purging_one_record_removes_a_record_that_no_longer_reads(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+    store.record_path(record["id"]).write_text("not a record", encoding="utf-8")
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).json() == {"records": 1, "images": 1}
+    assert not store.record_path(record["id"]).exists() and not store.image_path(record["id"]).exists()
+
+
+def test_purging_one_record_removes_what_a_crash_left(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+    tmp = store.record_path(record["id"]).with_suffix(".json.tmp")
+    tmp.write_text("{}", encoding="utf-8")
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 200
+    assert not tmp.exists()
+
+
+def test_a_failed_image_removal_keeps_the_record_that_finds_it(rig, monkeypatch) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+
+    def refuse(record_id: str) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "remove_image", refuse)
+    with pytest.raises(OSError, match="read-only"):
+        store.delete(record["id"])
+    assert store.record_path(record["id"]).is_file()
 
 
 def test_purging_an_unknown_or_malformed_record_is_a_404_and_releases_the_lock(rig) -> None:
