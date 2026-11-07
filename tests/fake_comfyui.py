@@ -27,8 +27,18 @@ IMAGE_HEADER = struct.pack(">II", 1, 2)  # format PNG
 
 
 def grey_png(size: int = 64) -> bytes:
+    """Grey with one lighter pixel, because a frame of one colour is a blank render."""
+    image = Image.new("RGB", (size, size), (128, 128, 128))
+    image.putpixel((0, 0), (129, 129, 129))
     buf = io.BytesIO()
-    Image.new("RGB", (size, size), (128, 128, 128)).save(buf, "PNG")
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def blank_png(size: int = 64) -> bytes:
+    """What a render of NaNs comes back as."""
+    buf = io.BytesIO()
+    Image.new("RGB", (size, size), (0, 0, 0)).save(buf, "PNG")
     return buf.getvalue()
 
 

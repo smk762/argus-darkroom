@@ -33,7 +33,7 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
 | `review` | some cell flagged; the image is kept and served behind its shield |
 | `deleted` | an illegal rule in any policy, `minor-exposed`, or an enforcing check that could not run |
 | `omitted` | SFW only: NudeNet saw exposure, or did not answer |
-| `failed` | expansion or generation failed; no image |
+| `failed` | expansion or generation failed, or the render came back blank; no image |
 
 Nothing is written before the verdict: no temp file, no `SaveImage` node. A workflow containing a node that saves,
 previews, exports or writes is refused when it is loaded.
