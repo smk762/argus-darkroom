@@ -344,15 +344,31 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     # -- purge (devmode only) ----------------------------------------------------------------------------
     if cfg.devmode:
 
-        @app.post("/purge")
-        async def purge(request: Request) -> dict:
-            """Delete every record and stored image, and clear darkroom's prompts from ComfyUI's history."""
+        async def require_confirm(request: Request) -> None:
             try:
                 body = await request.json()
             except ValueError:
                 body = None
             if body != {"confirm": "purge"}:
                 raise HTTPException(400, 'the body must be {"confirm": "purge"}')
+
+        @app.post("/purge/{record_id}")
+        async def purge_record(record_id: str, request: Request) -> dict:
+            """Delete one record and its stored image, which ``DELETE /record/{id}`` keeps. Records are the audit trail,
+            so this is a dev tool like ``/purge``."""
+            await require_confirm(request)
+            if not busy.acquire(blocking=False):
+                raise HTTPException(409, "a generation is running")
+            try:
+                record_or_404(record_id)
+                return {"records": 1, "images": engine.store.delete(record_id)}
+            finally:
+                busy.release()
+
+        @app.post("/purge")
+        async def purge(request: Request) -> dict:
+            """Delete every record and stored image, and clear darkroom's prompts from ComfyUI's history."""
+            await require_confirm(request)
             if not busy.acquire(blocking=False):
                 raise HTTPException(409, "a generation is running")
             try:

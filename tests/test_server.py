@@ -408,6 +408,60 @@ def test_purge_during_a_generation_is_a_409(rig) -> None:
     assert c.get("/records").json()["total"] == 1
 
 
+def test_purging_one_record_does_not_exist_without_devmode(rig) -> None:
+    c = client(rig)
+    record = generate(c)
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 404
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_needs_the_confirm_body(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    for kwargs in ({}, {"json": {}}, {"json": {"confirm": "yes"}}, {"content": b"not json"}):
+        assert c.post(f"/purge/{record['id']}", **kwargs).status_code == 400
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_during_a_generation_is_a_409(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    c.app.state.busy.acquire()
+    try:
+        assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 409
+    finally:
+        c.app.state.busy.release()
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_removes_it_and_its_image_and_nothing_else(rig) -> None:
+    c = client(rig, devmode=True)
+    gone = generate(c, {"seed": 1})["id"]
+    kept = generate(c, {"seed": 2})["id"]
+    r = c.post(f"/purge/{gone}", json={"confirm": "purge"})
+    assert r.status_code == 200 and r.json() == {"records": 1, "images": 1}
+    assert c.get(f"/record/{gone}").status_code == 404
+    assert c.get(f"/image/{gone}").status_code == 404
+    assert [record["id"] for record in c.get("/records").json()["records"]] == [kept]
+    assert c.get(f"/image/{kept}").status_code == 200
+    assert c.get("/health").json()["generating"] is False
+
+
+def test_purging_one_record_with_no_image_counts_none(rig) -> None:
+    c = client(rig, devmode=True)
+    rig.singguard.responder = answers(preflight=unsafe_answer("B. Real-World Crimes & Public Safety"))
+    refused = generate(c)
+    assert refused["outcome"] == "refused"
+    assert c.post(f"/purge/{refused['id']}", json={"confirm": "purge"}).json() == {"records": 1, "images": 0}
+
+
+def test_purging_an_unknown_or_malformed_record_is_a_404_and_releases_the_lock(rig) -> None:
+    c = client(rig, devmode=True)
+    for record_id in ("0" * 32, "not-an-id"):
+        assert c.post(f"/purge/{record_id}", json={"confirm": "purge"}).status_code == 404
+    assert c.get("/health").json()["generating"] is False
+
+
 def test_purge_leaves_a_clean_slate_and_an_archive_taken_before_holds_everything(rig) -> None:
     c = client(rig, devmode=True)
     ids = {generate(c, {"seed": n})["id"] for n in range(2)}
@@ -471,6 +525,7 @@ def test_read_only_refuses_every_write_before_it_reaches_a_backend(rig) -> None:
         lambda h: c.post("/generate/stream", json=BODY, headers=h),
         lambda h: c.delete("/record/" + "0" * 32, headers=h),
         lambda h: c.post("/purge", json={"confirm": "purge"}, headers=h),
+        lambda h: c.post("/purge/" + "0" * 32, json={"confirm": "purge"}, headers=h),
     ]
     for call in calls:
         for headers in ({}, origin):

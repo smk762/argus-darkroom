@@ -114,8 +114,8 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
 | `WORKFLOW` | | The template path. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | May read and write. `*` allows reads only. |
-| `DEVMODE` | off | Adds `POST /purge`. |
-| `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and `POST /purge`. Records and images stay readable. |
+| `DEVMODE` | off | Adds `POST /purge` and `POST /purge/{id}`. |
+| `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
 
 `ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
 
@@ -155,6 +155,7 @@ silent fall back to the unexpanded prompt.
 | `DELETE /record/{id}` | removes the user's own image; the record stays |
 | `GET /archive` | streamed zip of every record and stored image |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |
+| `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
 
