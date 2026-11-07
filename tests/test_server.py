@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 
 from argus_darkroom.comfyui import ComfyUIClient
 from argus_darkroom.config import ConfigError, Settings
+from argus_darkroom.modelfiles import pick_default
 from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 from argus_darkroom.server.app import POLICY_SUMMARIES
@@ -120,11 +121,34 @@ def test_policies_with_the_flag(rig) -> None:
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
         "checkpoints": [{"name": "base.safetensors"}],
+        "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
         "samplers": ["euler", "dpmpp_2m"],  # what ComfyUI's KSampler accepts
         "schedulers": ["normal", "karras"],
     }
+
+
+def test_models_names_the_configured_default(rig) -> None:
+    assert client(rig, default_checkpoint="base.safetensors").get("/models").json()["default_checkpoint"] == (
+        "base.safetensors"
+    )
+
+
+@pytest.mark.parametrize(
+    ("preferred", "expected"),
+    [
+        ("sdxl/b.safetensors", "sdxl/b.safetensors"),  # an exact name wins
+        ("sdxl", "sdxl/a.safetensors"),  # a folder gives its first model
+        ("sdxl/", "sdxl/a.safetensors"),
+        ("sd", None),  # a folder, not a prefix of one
+        ("missing", None),
+        ("", None),
+    ],
+)
+def test_pick_default(preferred: str, expected: str | None) -> None:
+    names = ["flux/a.safetensors", "sdxl/a.safetensors", "sdxl/b.safetensors"]
+    assert pick_default(names, preferred) == expected
 
 
 def test_models_without_comfyui_still_lists_the_files(rig) -> None:
