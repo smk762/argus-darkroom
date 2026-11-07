@@ -529,6 +529,45 @@ def test_purging_an_unknown_or_malformed_record_is_a_404_and_releases_the_lock(r
     assert c.get("/health").json()["generating"] is False
 
 
+@pytest.mark.parametrize("route", ["/purge", "/purge/{id}"])
+def test_a_removal_in_flight_cannot_bring_back_a_purged_record(rig, monkeypatch, route) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+    load, loaded, resume = store.load, threading.Event(), threading.Event()
+
+    def paused_load(record_id: str):
+        found = load(record_id)
+        loaded.set()
+        resume.wait(5)
+        return found
+
+    monkeypatch.setattr(store, "load", paused_load)
+    removal = threading.Thread(target=c.delete, args=(f"/record/{record['id']}",))
+    purge = threading.Thread(
+        target=c.post, args=(route.format(id=record["id"]),), kwargs={"json": {"confirm": "purge"}}
+    )
+    removal.start()
+    assert loaded.wait(5)
+    purge.start()
+    purge.join(0.3)  # long enough for an unguarded purge to finish while the removal holds its stale copy
+    resume.set()
+    removal.join(5)
+    purge.join(5)
+    assert not removal.is_alive() and not purge.is_alive()
+    assert not store.exists(record["id"])
+
+
+def test_a_removal_is_not_refused_during_a_generation(rig) -> None:
+    c = client(rig)
+    record = generate(c)
+    c.app.state.busy.acquire()
+    try:
+        assert c.delete(f"/record/{record['id']}").status_code == 200
+    finally:
+        c.app.state.busy.release()
+
+
 def test_purge_leaves_a_clean_slate_and_an_archive_taken_before_holds_everything(rig) -> None:
     c = client(rig, devmode=True)
     ids = {generate(c, {"seed": n})["id"] for n in range(2)}
@@ -621,9 +660,14 @@ def test_the_configured_origin_may_read_and_write(rig) -> None:
     assert c.post("/preflight", json=BODY, headers={"Origin": "http://localhost:3000"}).status_code == 403
 
 
-def test_by_default_only_safelights_dev_origin_is_trusted(rig) -> None:
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1"])
+@pytest.mark.parametrize("port", [3000, 3097])
+def test_by_default_only_safelights_origins_are_trusted(rig, host, port) -> None:
     c = client(rig)
-    assert c.post("/preflight", json=BODY, headers={"Origin": "http://localhost:3000"}).status_code == 200
+    origin = {"Origin": f"http://{host}:{port}"}
+    assert c.post("/preflight", json=BODY, headers=origin).status_code == 200
+    assert c.get("/health", headers=origin).headers["access-control-allow-origin"] == origin["Origin"]
+    assert c.post("/preflight", json=BODY, headers={"Origin": f"http://{host}:3098"}).status_code == 403
 
 
 def test_a_wildcard_grants_reads_never_writes(rig) -> None:
