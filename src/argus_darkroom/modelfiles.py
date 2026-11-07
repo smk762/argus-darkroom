@@ -55,10 +55,16 @@ class ModelLibrary:
         )
 
     def names(self, kind: Kind) -> list[str]:
-        """The model names found for *kind*, sorted. Empty when the folder is missing."""
+        """The model names found for *kind*, sorted. Empty when the folder is missing.
+
+        A diffusers folder (one holding ``model_index.json``) is skipped: its files are the parts of a model, and
+        none of them loads alone.
+        """
         folder = self._dir(kind)
         if not folder.is_dir():
             return []
+        files = [p for p in folder.rglob("*") if p.is_file()]
+        diffusers = {p.parent for p in files if p.name == "model_index.json"}
         return sorted(
-            p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file() and p.suffix in SUFFIXES
+            p.relative_to(folder).as_posix() for p in files if p.suffix in SUFFIXES and diffusers.isdisjoint(p.parents)
         )
