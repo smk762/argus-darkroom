@@ -137,7 +137,7 @@ A record is kept for every attempt, including refused and deleted ones. It is th
 GenerationRecord (record_version "1.0", wire schema committed)
   id, created_at, darkroom_version
   outcome: refused | passed | review | deleted | omitted | failed
-  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error
+  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error (a render of one colour is a generation error: there is nothing to judge)
   critical: bool                # true for illegal and minor-exposed deletions; false for everything else
   request
     mode: sfw | nsfw            # derived from guard.enforcing_policy, stored for filtering

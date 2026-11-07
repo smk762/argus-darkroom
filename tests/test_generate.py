@@ -5,11 +5,13 @@ An illegal verdict comes from a canned answer, never from image content: the fak
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
-from fake_comfyui import FakeComfyUI, event
+from fake_comfyui import FakeComfyUI, blank_png, event
 from fakes import FakeFaces, policy_of, safe_answer, unsafe_answer
+from PIL import Image
 from rig import (  # noqa: F401
     EXAMPLES,
     EXPOSED,
@@ -264,6 +266,28 @@ def test_an_undecodable_image_is_a_failed_record(tmp_path, singguard, nudenet) -
         record = rig.generate(rig.engine())
         assert record.outcome == "failed" and "cannot be decoded" in record.outcome_reason
         assert [p.suffix for p in rig.out.iterdir()] == [".json"]
+
+
+def test_a_blank_render_is_a_failed_record_and_is_never_scanned(tmp_path, singguard, nudenet) -> None:
+    with FakeComfyUI() as comfyui:
+        comfyui.png = blank_png()
+        rig = Rig(tmp_path, singguard, comfyui, nudenet)
+        record = rig.generate(rig.engine())
+        assert record.outcome == "failed" and "came back blank" in record.outcome_reason
+        assert record.image is None
+        assert [p.suffix for p in rig.out.iterdir()] == [".json"]
+        assert not [b for b in singguard.requests if is_image_scan(b)]
+
+
+def test_a_dark_image_is_not_blank(tmp_path, singguard, nudenet) -> None:
+    image = Image.new("RGB", (64, 64), (0, 0, 0))
+    image.putpixel((5, 5), (1, 1, 1))
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    with FakeComfyUI() as comfyui:
+        comfyui.png = buf.getvalue()
+        rig = Rig(tmp_path, singguard, comfyui, nudenet)
+        assert rig.generate(rig.engine()).outcome == "passed"
 
 
 def test_if_the_record_cannot_be_saved_the_released_image_is_removed(rig, monkeypatch) -> None:
