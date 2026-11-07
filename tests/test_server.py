@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 
 from argus_darkroom.comfyui import ComfyUIClient
 from argus_darkroom.config import ConfigError, Settings
-from argus_darkroom.modelfiles import pick_default
+from argus_darkroom.modelfiles import ModelLibrary, pick_default
 from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 from argus_darkroom.server.app import POLICY_SUMMARIES
@@ -149,6 +149,15 @@ def test_models_names_the_configured_default(rig) -> None:
 def test_pick_default(preferred: str, expected: str | None) -> None:
     names = ["flux/a.safetensors", "sdxl/a.safetensors", "sdxl/b.safetensors"]
     assert pick_default(names, preferred) == expected
+
+
+def test_models_skips_the_parts_of_a_diffusers_folder(tmp_path) -> None:
+    root = tmp_path / "checkpoints"
+    for name in ["whole.safetensors", "sdxl/a/a.safetensors", "sdxl/parts/unet/m.safetensors", "sdxl/parts/m.bin"]:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"x")
+    (root / "sdxl/parts/model_index.json").write_text("{}")
+    assert ModelLibrary(tmp_path).names("checkpoint") == ["sdxl/a/a.safetensors", "whole.safetensors"]
 
 
 def test_models_without_comfyui_still_lists_the_files(rig) -> None:

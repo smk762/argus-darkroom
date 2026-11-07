@@ -185,7 +185,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 
 - `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`, `read_only`.
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
-- `GET /models`: checkpoints and LoRAs found under the models root, and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
+- `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
 - `POST /generate/stream`: SSE events `preflight`, `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409.
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
