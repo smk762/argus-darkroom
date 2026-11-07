@@ -65,6 +65,15 @@ class RecordStore:
     def remove_image(self, record_id: str) -> None:
         self.image_path(record_id).unlink(missing_ok=True)
 
+    def delete(self, record_id: str) -> int:
+        """Remove a record and any image it kept. The number of images removed, 0 or 1."""
+        self.record_path(record_id).unlink(missing_ok=True)
+        path = self.image_path(record_id)
+        if not path.is_file():
+            return 0
+        path.unlink(missing_ok=True)
+        return 1
+
     def load(self, record_id: str) -> GenerationRecord | None:
         if not valid_id(record_id):
             return None
