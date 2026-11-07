@@ -38,7 +38,7 @@ services:
         NEXT_PUBLIC_DARKROOM_URL: ${DARKROOM_PUBLIC_URL:-http://localhost:8106}
     restart: unless-stopped
     ports:
-      - "${SAFELIGHT_PUBLISH:-127.0.0.1:3000}:3000"
+      - "${SAFELIGHT_PUBLISH:-127.0.0.1:3000}:3097"
     depends_on:
       darkroom:
         condition: service_healthy
