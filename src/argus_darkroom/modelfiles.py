@@ -15,6 +15,14 @@ SUBDIRS: dict[Kind, str] = {"checkpoint": "checkpoints", "lora": "loras", "vae":
 SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".sft")
 
 
+def pick_default(names: list[str], preferred: str) -> str | None:
+    """The name *preferred* selects: itself, or the first in the folder it names. None when nothing matches."""
+    if preferred in names:
+        return preferred
+    folder = preferred.strip("/") + "/"
+    return next((name for name in names if preferred and name.startswith(folder)), None)
+
+
 class ModelLibrary:
     def __init__(self, root: str | Path | None) -> None:
         self.root = Path(root) if root else None

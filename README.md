@@ -112,6 +112,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `ALLOW_NSFW` | off | Lets an NSFW policy enforce. |
 | `OUTPUT_ROOT` | `darkroom-output` | `<id>.json` records and `<id>.png` images. |
 | `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
+| `DEFAULT_CHECKPOINT` | `sdxl` | The checkpoint a form starts on: an exact name, or a folder under `checkpoints/` for the first model in it. When nothing matches, `/models` reports null. |
 | `WORKFLOW` | | The template path. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | May read and write. `*` allows reads only. |
 | `DEVMODE` | off | Adds `POST /purge` and `POST /purge/{id}`. |
@@ -147,7 +148,7 @@ silent fall back to the unexpanded prompt.
 |---|---|
 | `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status |
 | `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
-| `GET /models` | checkpoints and LoRAs as `{name}` objects, plus the samplers and schedulers ComfyUI offers |
+| `GET /models` | checkpoints and LoRAs as `{name}` objects, `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
 | `POST /generate/stream` | SSE: `preflight`, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |

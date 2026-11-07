@@ -46,6 +46,7 @@ from argus_darkroom.age import HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
+from argus_darkroom.modelfiles import pick_default
 from argus_darkroom.models import GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
 from argus_darkroom.store import valid_id
@@ -206,8 +207,10 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     @app.get("/models")
     async def models() -> dict:
         try:
+            checkpoints = engine.models.names("checkpoint")
             found = {
-                "checkpoints": [{"name": n} for n in engine.models.names("checkpoint")],
+                "checkpoints": [{"name": n} for n in checkpoints],
+                "default_checkpoint": pick_default(checkpoints, cfg.default_checkpoint),
                 "loras": [{"name": n} for n in engine.models.names("lora")],
                 "vaes": [{"name": n} for n in engine.models.names("vae")],
             }
