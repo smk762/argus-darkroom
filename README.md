@@ -33,7 +33,7 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
 | `review` | some cell flagged; the image is kept and served behind its shield |
 | `deleted` | an illegal rule in any policy, `minor-exposed`, or an enforcing check that could not run |
 | `omitted` | SFW only: NudeNet saw exposure, or did not answer |
-| `failed` | expansion or generation failed; no image |
+| `failed` | expansion or generation failed, or the render came back blank; no image |
 
 Nothing is written before the verdict: no temp file, no `SaveImage` node. A workflow containing a node that saves,
 previews, exports or writes is refused when it is loaded.
@@ -112,10 +112,11 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `ALLOW_NSFW` | off | Lets an NSFW policy enforce. |
 | `OUTPUT_ROOT` | `darkroom-output` | `<id>.json` records and `<id>.png` images. |
 | `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
+| `DEFAULT_CHECKPOINT` | `sdxl` | The checkpoint a form starts on: an exact name, or a folder under `checkpoints/` for the first model in it. When nothing matches, `/models` reports null. |
 | `WORKFLOW` | | The template path. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | May read and write. `*` allows reads only. |
-| `DEVMODE` | off | Adds `POST /purge`. |
-| `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and `POST /purge`. Records and images stay readable. |
+| `DEVMODE` | off | Adds `POST /purge` and `POST /purge/{id}`. |
+| `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
 
 `ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
 
@@ -147,7 +148,7 @@ silent fall back to the unexpanded prompt.
 |---|---|
 | `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status |
 | `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
-| `GET /models` | checkpoints and LoRAs as `{name}` objects, plus the samplers and schedulers ComfyUI offers |
+| `GET /models` | checkpoints and LoRAs as `{name}` objects, `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
 | `POST /generate/stream` | SSE: `preflight`, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
@@ -155,6 +156,7 @@ silent fall back to the unexpanded prompt.
 | `DELETE /record/{id}` | removes the user's own image; the record stays |
 | `GET /archive` | streamed zip of every record and stored image |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |
+| `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
 

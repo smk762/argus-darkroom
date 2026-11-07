@@ -3,7 +3,7 @@
 ========================  =====================================================================================
 ``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
-``GET /models``           checkpoints, LoRAs and VAEs found under the models root
+``GET /models``           checkpoints, LoRAs and VAEs found under the models root, and ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
 ``POST /generate/stream`` SSE: ``preflight``, ``queued``, ``progress``, ``scan``, ``complete``; one at a time
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
@@ -11,6 +11,7 @@
 ``DELETE /record/{id}``   the user removing their own output: the file goes, the record stays
 ``GET /archive``          a streamed zip of every record and every stored image (read-only, always on)
 ``POST /purge``           everything, from a clean slate; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
+``POST /purge/{id}``      one record and its image; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ========================  =====================================================================================
 
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
@@ -46,6 +47,7 @@ from argus_darkroom.age import HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
+from argus_darkroom.modelfiles import pick_default
 from argus_darkroom.models import GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
 from argus_darkroom.store import valid_id
@@ -204,17 +206,19 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
 
     @app.get("/models")
-    async def models() -> dict:
+    def models() -> dict:
         try:
+            checkpoints = engine.models.names("checkpoint")
             found = {
-                "checkpoints": [{"name": n} for n in engine.models.names("checkpoint")],
+                "checkpoints": [{"name": n} for n in checkpoints],
+                "default_checkpoint": pick_default(checkpoints, cfg.default_checkpoint),
                 "loras": [{"name": n} for n in engine.models.names("lora")],
                 "vaes": [{"name": n} for n in engine.models.names("vae")],
             }
         except RequestError as exc:
             raise HTTPException(400, str(exc)) from exc
         # What ComfyUI accepts, so the form offers only values that run (empty when ComfyUI does not say).
-        return found | await run_in_threadpool(engine.comfyui.sampling_choices)
+        return found | engine.comfyui.sampling_choices()
 
     # -- pre-flight and generation -----------------------------------------------------------------------
     @app.post("/preflight")
@@ -344,15 +348,33 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     # -- purge (devmode only) ----------------------------------------------------------------------------
     if cfg.devmode:
 
-        @app.post("/purge")
-        async def purge(request: Request) -> dict:
-            """Delete every record and stored image, and clear darkroom's prompts from ComfyUI's history."""
+        async def require_confirm(request: Request) -> None:
             try:
                 body = await request.json()
             except ValueError:
                 body = None
             if body != {"confirm": "purge"}:
                 raise HTTPException(400, 'the body must be {"confirm": "purge"}')
+
+        @app.post("/purge/{record_id}")
+        async def purge_record(record_id: str, request: Request) -> dict:
+            """Delete one record and its stored image, which ``DELETE /record/{id}`` keeps. Records are the audit trail,
+            so this is a dev tool like ``/purge``."""
+            await require_confirm(request)
+            if not busy.acquire(blocking=False):
+                raise HTTPException(409, "a generation is running")
+            try:
+                # Not parsed: a record that no longer reads is one this must still be able to remove.
+                if not engine.store.exists(record_id):
+                    raise HTTPException(404, "no such record")
+                return {"records": 1, "images": engine.store.delete(record_id)}
+            finally:
+                busy.release()
+
+        @app.post("/purge")
+        async def purge(request: Request) -> dict:
+            """Delete every record and stored image, and clear darkroom's prompts from ComfyUI's history."""
+            await require_confirm(request)
             if not busy.acquire(blocking=False):
                 raise HTTPException(409, "a generation is running")
             try:

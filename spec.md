@@ -137,7 +137,7 @@ A record is kept for every attempt, including refused and deleted ones. It is th
 GenerationRecord (record_version "1.0", wire schema committed)
   id, created_at, darkroom_version
   outcome: refused | passed | review | deleted | omitted | failed
-  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error
+  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error (a render of one colour is a generation error: there is nothing to judge)
   critical: bool                # true for illegal and minor-exposed deletions; false for everything else
   request
     mode: sfw | nsfw            # derived from guard.enforcing_policy, stored for filtering
@@ -185,7 +185,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 
 - `GET /health`: version, which backends answer, the policy list, `nsfw_allowed`, `read_only`.
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
-- `GET /models`: checkpoints and LoRAs found under the models root.
+- `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
 - `POST /generate/stream`: SSE events `preflight`, `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409.
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
@@ -193,9 +193,10 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `DELETE /record/{id}`: the user removing their own output. This deletes the file; the record stays, marked as removed by the user.
 - `GET /archive`: a streamed zip of every record (JSON) and every stored image, which means passed and review images only, because deleted and omitted ones were never written. It is read-only and always available.
 - `POST /purge`: deletes every record and stored image, and clears darkroom's prompts from ComfyUI's history. A clean slate. It exists only when `ARGUS_DARKROOM_DEVMODE=1`, and answers 404 otherwise, so hiding the button is not the only thing preventing a purge. The body must be `{"confirm": "purge"}`. A purge during a generation gets HTTP 409. `/health` reports `devmode`.
+- `POST /purge/{id}`: deletes one record and its stored image, with the same confirm body, the same refusal during a generation, and the same 404 without `ARGUS_DARKROOM_DEVMODE=1`. Refused and deleted records are the audit trail, so outside devmode a record can only lose its image, through `DELETE /record/{id}`.
 - `WriteGuard` and `cross_site_refuse` from cortex. CORS allows reads by default; writes are allowed only from the configured origins (`ARGUS_DARKROOM_CORS_ORIGINS`).
 
-**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
+**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `DEFAULT_CHECKPOINT` (default `sdxl`: an exact name, or a folder for the first model in it), `WORKFLOW` (the template path), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
 
 **Store:** one flat `<id>.json` per record, the same pattern as curator's `ScanStore`. Images go under `<output_root>/<id>.png`.
 

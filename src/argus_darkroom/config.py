@@ -31,6 +31,8 @@ class Settings:
     thinking: str = "cascade"
     output_root: Path = Path("darkroom-output")
     models_root: Path | None = None
+    # The checkpoint a form starts on: an exact name, or a folder under checkpoints/ for the first model in it.
+    default_checkpoint: str = "sdxl"
     workflow: Path | None = None
     allow_nsfw: bool = False
     devmode: bool = False
@@ -79,6 +81,7 @@ class Settings:
             thinking=get("THINKING", "cascade"),
             output_root=Path(get("OUTPUT_ROOT") or "darkroom-output"),
             models_root=Path(p) if (p := get("MODELS_ROOT")) else None,
+            default_checkpoint=get("DEFAULT_CHECKPOINT", defaults["default_checkpoint"].default),
             workflow=Path(p) if (p := get("WORKFLOW")) else None,
             allow_nsfw=allow_nsfw,
             devmode=env_flag(PREFIX + "DEVMODE"),

@@ -54,7 +54,7 @@ MARKERS = {
 EXPOSED = "FEMALE_BREAST_EXPOSED"  # a NudeNet class name; the score is made up
 ILLEGAL_RULE = {"adult-granular": "A. Minors"}
 MARKER = re.compile(r"\[([a-z-]+)\]")
-DEFAULT_ORIGINS = tuple(f"http://{host}:{port}" for port in (3000, 3100) for host in ("localhost", "127.0.0.1"))
+DEFAULT_ORIGINS = tuple(f"http://{host}:{port}" for port in (3000, 3097, 3100) for host in ("localhost", "127.0.0.1"))
 WHY = "Demo verdict: chosen by a marker in the prompt, not by any content."
 
 

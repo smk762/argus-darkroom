@@ -17,6 +17,7 @@ from starlette.testclient import TestClient
 
 from argus_darkroom.comfyui import ComfyUIClient
 from argus_darkroom.config import ConfigError, Settings
+from argus_darkroom.modelfiles import ModelLibrary, pick_default
 from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 from argus_darkroom.server.app import POLICY_SUMMARIES
@@ -120,11 +121,44 @@ def test_policies_with_the_flag(rig) -> None:
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
         "checkpoints": [{"name": "base.safetensors"}],
+        "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
         "samplers": ["euler", "dpmpp_2m"],  # what ComfyUI's KSampler accepts
         "schedulers": ["normal", "karras"],
     }
+
+
+def test_models_names_the_configured_default(rig) -> None:
+    assert client(rig, default_checkpoint="base.safetensors").get("/models").json()["default_checkpoint"] == (
+        "base.safetensors"
+    )
+
+
+@pytest.mark.parametrize(
+    ("preferred", "expected"),
+    [
+        ("sdxl/b.safetensors", "sdxl/b.safetensors"),  # an exact name wins
+        ("sdxl", "sdxl/a.safetensors"),  # a folder gives its first model
+        ("sdxl/", "sdxl/a.safetensors"),
+        ("sd", None),  # a folder, not a prefix of one
+        ("missing", None),
+        ("", None),
+        ("/", None),
+    ],
+)
+def test_pick_default(preferred: str, expected: str | None) -> None:
+    names = ["flux/a.safetensors", "sdxl/a.safetensors", "sdxl/b.safetensors"]
+    assert pick_default(names, preferred) == expected
+
+
+def test_models_skips_the_parts_of_a_diffusers_folder(tmp_path) -> None:
+    root = tmp_path / "checkpoints"
+    for name in ["whole.safetensors", "sdxl/a/a.safetensors", "sdxl/parts/unet/m.safetensors", "sdxl/parts/m.bin"]:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_bytes(b"x")
+    (root / "sdxl/parts/model_index.json").write_text("{}")
+    assert ModelLibrary(tmp_path).names("checkpoint") == ["sdxl/a/a.safetensors", "whole.safetensors"]
 
 
 def test_models_without_comfyui_still_lists_the_files(rig) -> None:
@@ -408,6 +442,93 @@ def test_purge_during_a_generation_is_a_409(rig) -> None:
     assert c.get("/records").json()["total"] == 1
 
 
+def test_purging_one_record_does_not_exist_without_devmode(rig) -> None:
+    c = client(rig)
+    record = generate(c)
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 404
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_needs_the_confirm_body(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    for kwargs in ({}, {"json": {}}, {"json": {"confirm": "yes"}}, {"content": b"not json"}):
+        assert c.post(f"/purge/{record['id']}", **kwargs).status_code == 400
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_during_a_generation_is_a_409(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    c.app.state.busy.acquire()
+    try:
+        assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 409
+    finally:
+        c.app.state.busy.release()
+    assert c.get("/records").json()["total"] == 1
+
+
+def test_purging_one_record_removes_it_and_its_image_and_nothing_else(rig) -> None:
+    c = client(rig, devmode=True)
+    gone = generate(c, {"seed": 1})["id"]
+    kept = generate(c, {"seed": 2})["id"]
+    r = c.post(f"/purge/{gone}", json={"confirm": "purge"})
+    assert r.status_code == 200 and r.json() == {"records": 1, "images": 1}
+    assert c.get(f"/record/{gone}").status_code == 404
+    assert c.get(f"/image/{gone}").status_code == 404
+    assert [record["id"] for record in c.get("/records").json()["records"]] == [kept]
+    assert c.get(f"/image/{kept}").status_code == 200
+    assert c.get("/health").json()["generating"] is False
+
+
+def test_purging_one_record_with_no_image_counts_none(rig) -> None:
+    c = client(rig, devmode=True)
+    rig.singguard.responder = answers(preflight=unsafe_answer("B. Real-World Crimes & Public Safety"))
+    refused = generate(c)
+    assert refused["outcome"] == "refused"
+    assert c.post(f"/purge/{refused['id']}", json={"confirm": "purge"}).json() == {"records": 1, "images": 0}
+
+
+def test_purging_one_record_removes_a_record_that_no_longer_reads(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+    store.record_path(record["id"]).write_text("not a record", encoding="utf-8")
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).json() == {"records": 1, "images": 1}
+    assert not store.record_path(record["id"]).exists() and not store.image_path(record["id"]).exists()
+
+
+def test_purging_one_record_removes_what_a_crash_left(rig) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+    tmp = store.record_path(record["id"]).with_suffix(".json.tmp")
+    tmp.write_text("{}", encoding="utf-8")
+    assert c.post(f"/purge/{record['id']}", json={"confirm": "purge"}).status_code == 200
+    assert not tmp.exists()
+
+
+def test_a_failed_image_removal_keeps_the_record_that_finds_it(rig, monkeypatch) -> None:
+    c = client(rig, devmode=True)
+    record = generate(c)
+    store = c.app.state.engine.store
+
+    def refuse(record_id: str) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "remove_image", refuse)
+    with pytest.raises(OSError, match="read-only"):
+        store.delete(record["id"])
+    assert store.record_path(record["id"]).is_file()
+
+
+def test_purging_an_unknown_or_malformed_record_is_a_404_and_releases_the_lock(rig) -> None:
+    c = client(rig, devmode=True)
+    for record_id in ("0" * 32, "not-an-id"):
+        assert c.post(f"/purge/{record_id}", json={"confirm": "purge"}).status_code == 404
+    assert c.get("/health").json()["generating"] is False
+
+
 def test_purge_leaves_a_clean_slate_and_an_archive_taken_before_holds_everything(rig) -> None:
     c = client(rig, devmode=True)
     ids = {generate(c, {"seed": n})["id"] for n in range(2)}
@@ -471,6 +592,7 @@ def test_read_only_refuses_every_write_before_it_reaches_a_backend(rig) -> None:
         lambda h: c.post("/generate/stream", json=BODY, headers=h),
         lambda h: c.delete("/record/" + "0" * 32, headers=h),
         lambda h: c.post("/purge", json={"confirm": "purge"}, headers=h),
+        lambda h: c.post("/purge/" + "0" * 32, json={"confirm": "purge"}, headers=h),
     ]
     for call in calls:
         for headers in ({}, origin):
