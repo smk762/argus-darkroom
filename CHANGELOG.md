@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **SDXL renders use SDXL's own text-encoder layer.** `clip_skip` 1 sent `stop_at_clip_layer: -1`, the last CLIP
+  layer, which SDXL never uses. Some checkpoints ship that layer as all NaN, so every render came back blank (#19).
+  `clip_skip` is now read as A1111 reads it for SDXL: 1 and 2 both send -2, ComfyUI's default. Every SDXL render with
+  `clip_skip` 1 changes, so rerunning an older record with its seed gives a different image.
+- A request's `clip_skip` must be from 1 to 12. Records outside that range still load.
 - `DELETE /record/{id}` can no longer bring back a record that a devmode purge deleted while the removal was running.
 
 ## [0.1.1] - 2026-11-07

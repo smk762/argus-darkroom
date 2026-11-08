@@ -96,6 +96,9 @@ A ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, 
 `$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no other node that
 saves. See [`examples/workflows/`](examples/workflows).
 
+`$clip_skip` is read as A1111 reads it for SDXL: `clip_skip` 1 and 2 both send `stop_at_clip_layer: -2`, the layer SDXL
+conditions on, and `n` above 2 sends `-n`. A request may ask for 1 to 12.
+
 ## Configuration
 
 All settings are `ARGUS_DARKROOM_*` environment variables.

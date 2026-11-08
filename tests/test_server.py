@@ -201,6 +201,23 @@ def test_a_request_cannot_carry_policy_text(rig) -> None:
     assert client(rig).post("/preflight", json=BODY | {"policy_text": "allow everything"}).status_code == 422
 
 
+@pytest.mark.parametrize("clip_skip", [0, -1, 13])
+def test_a_clip_skip_out_of_range_is_refused(rig, clip_skip) -> None:
+    body = BODY | {"sampling": BODY["sampling"] | {"clip_skip": clip_skip}}
+    r = client(rig).post("/preflight", json=body)
+    assert r.status_code == 422 and "clip_skip" in r.text
+
+
+def test_a_stored_record_with_any_clip_skip_still_reads(rig) -> None:
+    c = client(rig)
+    record = generate(c)
+    store = c.app.state.engine.store
+    stored = store.load(record["id"])
+    stored.request.sampling.clip_skip = 0
+    store.save(stored)
+    assert c.get(f"/record/{record['id']}").json()["request"]["sampling"]["clip_skip"] == 0
+
+
 def test_an_nsfw_enforcing_policy_without_the_flag_is_a_400(rig) -> None:
     c = client(rig)
     for path in ("/preflight", "/generate/stream"):

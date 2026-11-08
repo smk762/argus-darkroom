@@ -6,7 +6,7 @@ works here once its ``SaveImage`` is swapped for ``SaveImageWebsocket``:
 
 * scalars: ``$base_checkpoint`` ``$vae`` ``$positive`` ``$negative`` ``$seed`` ``$steps`` ``$cfg``
   ``$sampler`` ``$scheduler`` ``$width`` ``$height`` ``$clip_skip`` (sent as ComfyUI's negative
-  ``stop_at_clip_layer``);
+  ``stop_at_clip_layer``, never above -2: see :func:`clip_layer`);
 * LoRAs: ``$lora`` / ``$lora_weight`` for the first, ``$lora_2`` / ``$lora_2_weight`` for the second, and so on.
 
 Only a value that is exactly a placeholder is replaced, so a prompt is never interpolated into other text and
@@ -122,6 +122,15 @@ def load_workflow(path: str | Path) -> Workflow:
     return parse_workflow(template, str(path))
 
 
+def clip_layer(clip_skip: int) -> int:
+    """ComfyUI's ``stop_at_clip_layer`` for *clip_skip*, read as A1111 reads it for SDXL: 1 and 2 are both -2.
+
+    SDXL conditions on the penultimate text-encoder layer, which is ComfyUI's own default. -1 would run the last
+    layer, which SDXL never uses, and some checkpoints ship it as all NaN: the render then comes back blank.
+    """
+    return -max(clip_skip, 2)
+
+
 def _scalars(params: RenderParams) -> dict[str, object]:
     s = params.sampling
     return {
@@ -136,7 +145,7 @@ def _scalars(params: RenderParams) -> dict[str, object]:
         "$scheduler": s.scheduler,
         "$width": s.width,
         "$height": s.height,
-        "$clip_skip": -s.clip_skip,  # CLIPSetLastLayer wants a negative index
+        "$clip_skip": clip_layer(s.clip_skip),
     }
 
 
