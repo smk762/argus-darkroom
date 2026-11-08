@@ -11,8 +11,9 @@ from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import env_flag
 
 PREFIX = "ARGUS_DARKROOM_"
-# Safelight's dev origin: read from it by default, and the only origin trusted to write unless others are named.
-LOCAL_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
+# Safelight's origins, published (3000) and `make dev` (3097): read from them by default, and the only ones trusted to
+# write unless others are named.
+LOCAL_ORIGINS = tuple(f"http://{host}:{port}" for port in (3000, 3097) for host in ("localhost", "127.0.0.1"))
 
 
 class ConfigError(ValueError):

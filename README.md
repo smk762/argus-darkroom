@@ -96,6 +96,9 @@ A ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, 
 `$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no other node that
 saves. See [`examples/workflows/`](examples/workflows).
 
+`$clip_skip` is read as A1111 reads it for SDXL: `clip_skip` 1 and 2 both send `stop_at_clip_layer: -2`, the layer SDXL
+conditions on, and `n` above 2 sends `-n`. A request may ask for 1 to 12.
+
 ## Configuration
 
 All settings are `ARGUS_DARKROOM_*` environment variables.
@@ -114,7 +117,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
 | `DEFAULT_CHECKPOINT` | `sdxl` | The checkpoint a form starts on: an exact name, or a folder under `checkpoints/` for the first model in it. When nothing matches, `/models` reports null. |
 | `WORKFLOW` | | The template path. |
-| `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | May read and write. `*` allows reads only. |
+| `CORS_ORIGINS` | `localhost` and `127.0.0.1` on ports 3000 and 3097 | May read and write. `*` allows reads only. Compose defaults to port 3000 only. |
 | `DEVMODE` | off | Adds `POST /purge` and `POST /purge/{id}`. |
 | `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
 
@@ -242,8 +245,10 @@ the labelled prompts in `eval/`; run it by hand, not in CI.
 
 - **CI** runs via the shared [`argus-ci`](https://github.com/smk762/argus-ci) reusable workflow, plus a `schema --check`
   job.
-- **Release** publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags.
+- **Release** publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags, then creates the GitHub Release.
 - Versioning is derived from git tags via `hatch-vcs`: tag `vX.Y.Z` to cut a release.
+- Release notes are the version's section of `CHANGELOG.md`. Add a `## [X.Y.Z]` section before tagging: without one,
+  the build fails and nothing is published.
 
 This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template).
 Run `copier update` to pull template changes (CI, release, tooling).

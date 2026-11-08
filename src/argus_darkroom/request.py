@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from argus_darkroom.models import SamplingParams
 
+MAX_CLIP_SKIP = 12  # CLIP-L's layers
+
 
 class RequestError(ValueError):
     """The request cannot be served as asked (HTTP 400)."""
@@ -53,6 +55,15 @@ class GenerateRequest(BaseModel):
     def _known_thinking(cls, value: str | None) -> str | None:
         if value is not None and value not in THINKING_MODES:
             raise ValueError(f"thinking must be one of {', '.join(THINKING_MODES)}")
+        return value
+
+    @field_validator("sampling")
+    @classmethod
+    def _clip_skip_in_range(cls, value: SamplingParams | None) -> SamplingParams | None:
+        # Checked here, not on SamplingParams, so a stored record never stops loading. Past 12, CLIP-L's depth,
+        # ComfyUI falls back to the last layer, which is the one that can be all NaN.
+        if value is not None and not 1 <= value.clip_skip <= MAX_CLIP_SKIP:
+            raise ValueError(f"clip_skip must be from 1 to {MAX_CLIP_SKIP}")
         return value
 
     @property
