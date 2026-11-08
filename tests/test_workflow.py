@@ -127,6 +127,12 @@ def test_render_fills_typed_values() -> None:
     assert out["4"]["inputs"]["ckpt_name"] == "m.safetensors"
 
 
+@pytest.mark.parametrize(("clip_skip", "layer"), [(1, -2), (2, -2), (3, -3), (12, -12)])
+def test_clip_skip_never_reaches_the_last_text_encoder_layer(clip_skip, layer) -> None:
+    sampling = SAMPLING.model_copy(update={"clip_skip": clip_skip})
+    assert render(parse_workflow(graph()), params(sampling=sampling))["11"]["inputs"]["stop_at_clip_layer"] == layer
+
+
 def test_render_does_not_change_the_template() -> None:
     wf = parse_workflow(graph())
     before = copy.deepcopy(wf.template)
