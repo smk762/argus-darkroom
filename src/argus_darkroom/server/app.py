@@ -125,6 +125,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     app.state.engine = engine
     busy = threading.Lock()  # held for the whole of one generation (or a purge)
     app.state.busy = busy
+    # Held while a stored record changes, so a removal that read a record cannot save it back over a purge. Separate from
+    # busy, which would refuse every removal during a generation.
+    record_lock = threading.Lock()
 
     # -- CORS and the write guard ------------------------------------------------------------------------
     wildcard = "*" in cfg.cors_origins
@@ -308,16 +311,17 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         """The user removing their own output: the file is deleted, the record stays, marked as removed."""
         from datetime import UTC, datetime
 
-        found = record_or_404(record_id)
-        if found.removed_at is not None:
+        with record_lock:
+            found = record_or_404(record_id)
+            if found.removed_at is not None:
+                return found
+            if found.image is None or found.image.path is None:
+                raise HTTPException(409, "this record has no stored image to remove")
+            engine.store.remove_image(record_id)
+            found.image.path = None
+            found.removed_at = datetime.now(UTC)
+            engine.store.save(found)
             return found
-        if found.image is None or found.image.path is None:
-            raise HTTPException(409, "this record has no stored image to remove")
-        engine.store.remove_image(record_id)
-        found.image.path = None
-        found.removed_at = datetime.now(UTC)
-        engine.store.save(found)
-        return found
 
     @app.get("/archive")
     def archive() -> StreamingResponse:
@@ -364,10 +368,11 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             if not busy.acquire(blocking=False):
                 raise HTTPException(409, "a generation is running")
             try:
-                # Not parsed: a record that no longer reads is one this must still be able to remove.
-                if not engine.store.exists(record_id):
-                    raise HTTPException(404, "no such record")
-                return {"records": 1, "images": engine.store.delete(record_id)}
+                with record_lock:
+                    # Not parsed: a record that no longer reads is one this must still be able to remove.
+                    if not engine.store.exists(record_id):
+                        raise HTTPException(404, "no such record")
+                    return {"records": 1, "images": engine.store.delete(record_id)}
             finally:
                 busy.release()
 
@@ -379,12 +384,13 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 raise HTTPException(409, "a generation is running")
             try:
                 removed = {"records": 0, "images": 0}
-                for path in engine.store.root.iterdir():
-                    if valid_id(path.stem) and path.suffix in (".json", ".png"):
-                        path.unlink(missing_ok=True)
-                        removed["records" if path.suffix == ".json" else "images"] += 1
-                    elif path.name.endswith((".json.tmp", ".png.tmp")):
-                        path.unlink(missing_ok=True)
+                with record_lock:
+                    for path in engine.store.root.iterdir():
+                        if valid_id(path.stem) and path.suffix in (".json", ".png"):
+                            path.unlink(missing_ok=True)
+                            removed["records" if path.suffix == ".json" else "images"] += 1
+                        elif path.name.endswith((".json.tmp", ".png.tmp")):
+                            path.unlink(missing_ok=True)
                 try:
                     history: int | None = await run_in_threadpool(engine.comfyui.purge_history)
                 except GenerationError as exc:
