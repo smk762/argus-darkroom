@@ -15,7 +15,7 @@ from typer import Argument, Option
 
 from argus_darkroom import __version__
 from argus_darkroom.config import PREFIX, ConfigError, Settings
-from argus_darkroom.request import GenerateRequest, LoRASpec, RequestError
+from argus_darkroom.request import MAX_CLIP_SKIP, GenerateRequest, LoRASpec, RequestError
 
 app = typer.Typer(help="Guarded image generation: prompts and outputs are checked before anything is released.")
 
@@ -99,7 +99,7 @@ def generate(
     cfg: float = Option(..., "--cfg"),
     width: int = Option(..., "--width"),
     height: int = Option(..., "--height"),
-    clip_skip: int = Option(1, "--clip-skip"),
+    clip_skip: int = Option(1, "--clip-skip", min=1, max=MAX_CLIP_SKIP),
     expand: bool = Option(False, "--expand", help="Expand the prompt with Ollama first (the expansion is checked too)"),
     negative: str = Option("", "--negative", "-n", help="Negative prompt: always part of the checks"),
     seed: int | None = Option(None, "--seed", help="Fixed seed (default: random, recorded)"),

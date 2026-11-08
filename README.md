@@ -248,7 +248,7 @@ the labelled prompts in `eval/`; run it by hand, not in CI.
 - **Release** publishes to PyPI (OIDC trusted publishing) and GHCR on `v*` tags, then creates the GitHub Release.
 - Versioning is derived from git tags via `hatch-vcs`: tag `vX.Y.Z` to cut a release.
 - Release notes are the version's section of `CHANGELOG.md`. Add a `## [X.Y.Z]` section before tagging: without one,
-  the GitHub Release fails after PyPI has already published.
+  the build fails and nothing is published.
 
 This repo was scaffolded from [`argus-pkg-template`](https://github.com/smk762/argus-pkg-template).
 Run `copier update` to pull template changes (CI, release, tooling).
