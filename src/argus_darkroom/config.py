@@ -34,6 +34,7 @@ class Settings:
     models_root: Path | None = None
     # The checkpoint a form starts on: an exact name, or a folder under checkpoints/ for the first model in it.
     default_checkpoint: str = "sdxl"
+    # A template file used for every checkpoint, or a directory of them chosen per request (workflow.load_workflows).
     workflow: Path | None = None
     allow_nsfw: bool = False
     devmode: bool = False

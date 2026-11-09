@@ -39,7 +39,15 @@ from argus_darkroom.prompt import assemble_prompt
 from argus_darkroom.request import GenerateRequest, RequestError, check_policies
 from argus_darkroom.scan import Scanner
 from argus_darkroom.store import RecordStore, new_id
-from argus_darkroom.workflow import SAVE_NODE, RenderParams, Workflow, WorkflowError, load_workflow, render
+from argus_darkroom.workflow import (
+    SAVE_NODE,
+    RenderParams,
+    Workflow,
+    WorkflowError,
+    WorkflowSet,
+    load_workflows,
+    render,
+)
 
 logger = structlog.get_logger()
 
@@ -50,8 +58,10 @@ _REASON_MAX = 500
 
 @dataclass(frozen=True)
 class Prepared:
-    """A request with its models found and hashed and its seed fixed, before any GPU time is spent."""
+    """A request with its workflow chosen, its models found and hashed and its seed fixed, before any GPU time is
+    spent."""
 
+    workflow: Workflow
     seed: int
     checkpoint: ModelRef
     vae: ModelRef | None
@@ -73,7 +83,7 @@ class Engine:
         guard: Guard | None = None,
         store: RecordStore | None = None,
         comfyui: ComfyUIClient | None = None,
-        workflow: Workflow | None = None,
+        workflows: WorkflowSet | None = None,
         models: ModelLibrary | None = None,
         nudenet: NudeNetClient | None = None,
         age: AgeEstimator | None = None,
@@ -85,7 +95,7 @@ class Engine:
         self.comfyui = comfyui or ComfyUIClient(settings.comfyui_url)
         self.models = models or ModelLibrary(settings.models_root)
         # A template that could write before the verdict is refused here, at load, not when it runs.
-        self.workflow = workflow or (load_workflow(settings.workflow) if settings.workflow else None)
+        self.workflows = workflows or (load_workflows(settings.workflow) if settings.workflow else None)
         self._outputs_verified: set[str] = set()
         if nudenet is None and settings.nudenet_url:
             nudenet = NudeNetClient(settings.nudenet_url)
@@ -184,7 +194,7 @@ class Engine:
         checkpoint: ModelRef | None = None,
         vae: ModelRef | None = None,
         loras: tuple[LoRARef, ...] = (),
-        workflow_sha256: str | None = None,
+        workflow: Workflow | None = None,
         engine_version: str | None = None,
     ) -> RequestRecord:
         return RequestRecord(
@@ -199,7 +209,8 @@ class Engine:
             checkpoint=checkpoint,
             vae=vae,
             loras=list(loras),
-            workflow_sha256=workflow_sha256,
+            workflow_sha256=workflow.sha256 if workflow else None,
+            workflow=workflow.name if workflow else None,
             engine_version=engine_version,
         )
 
@@ -228,25 +239,30 @@ class Engine:
     # -- render -----------------------------------------------------------------------------------------
 
     def prepare(self, request: GenerateRequest) -> Prepared:
-        """Check a request can be rendered, and resolve and hash its models: a missing file fails before any
-        GPU time (or pre-flight time) is spent.
+        """Check a request can be rendered, choose its workflow, and resolve and hash its models: a missing file
+        or a family with no workflow fails before any GPU time (or pre-flight time) is spent.
 
         Raises :class:`RequestError`.
         """
         enforcing, _ = self.policies(request)
         self.require_generation_ready(enforcing)
-        if self.workflow is None:
+        if self.workflows is None:
             raise RequestError("no workflow is configured (ARGUS_DARKROOM_WORKFLOW)")
         if request.sampling is None or not request.checkpoint:
             raise RequestError("a generation needs sampling parameters and a checkpoint")
+        try:
+            workflow = self.workflows.select(request.checkpoint, len(request.loras))
+        except WorkflowError as exc:
+            raise RequestError(str(exc)) from exc
         prepared = Prepared(
+            workflow=workflow,
             seed=request.seed if request.seed is not None else secrets.randbits(32),
             checkpoint=self.models.ref("checkpoint", request.checkpoint),
             vae=self.models.ref("vae", request.vae) if request.vae else None,
             loras=tuple(self.models.lora_ref(lora.name, lora.weight, lora.trigger_words) for lora in request.loras),
         )
-        try:  # the template's LoRA and VAE slots must fit this request: better a 400 now than a failure later
-            render(self.workflow, self._params(request, prepared, ""))
+        try:  # the template's slots must fit this request: better a 400 now than a failure later
+            render(workflow, self._params(request, prepared, ""))
         except WorkflowError as exc:
             raise RequestError(str(exc)) from exc
         return prepared
@@ -279,8 +295,7 @@ class Engine:
         Raises :class:`RequestError` (nothing was sent to ComfyUI) or :class:`GenerationError`.
         """
         prepared = prepared or self.prepare(request)
-        workflow = self.workflow
-        assert workflow is not None  # prepare() checked
+        workflow = prepared.workflow
         enforcing, _ = self.policies(request)
 
         self._verify_outputs(workflow)
@@ -309,7 +324,7 @@ class Engine:
             checkpoint=prepared.checkpoint,
             vae=prepared.vae,
             loras=prepared.loras,
-            workflow_sha256=self.workflow.sha256 if self.workflow else None,
+            workflow=prepared.workflow,
             engine_version=engine_version,
         )
 
@@ -348,8 +363,9 @@ class Engine:
         """Validate *request* and fix everything that can fail on its own account, then return the run.
 
         Splitting it from the run lets a server answer HTTP 400 before it opens a stream. Raises
-        :class:`RequestError`: an unknown or NSFW-without-flag policy, SFW without NudeNet, no workflow, a missing
-        model, sampling or checkpoint, or a workflow whose LoRA and VAE slots do not match the request.
+        :class:`RequestError`: an unknown or NSFW-without-flag policy, SFW without NudeNet, no workflow for the
+        checkpoint's family and LoRA count, a missing model, sampling or checkpoint, or a value the workflow has no
+        slot for.
         """
         self.policies(request)
         if request.expand and self.expander is None:

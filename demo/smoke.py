@@ -61,7 +61,7 @@ def generate(base: str, prompt: str, policy: str) -> tuple[dict, list[str]]:
     body = {
         "user_prompt": prompt,
         "negative_prompt": "",
-        "checkpoint": "demo-checkpoint.safetensors",
+        "checkpoint": "sdxl/demo-checkpoint.safetensors",
         "sampling": SAMPLING,
         "enforcing_policy": policy,
         "seed": 7,

@@ -52,6 +52,8 @@ class SamplingParams(BaseModel):
     scheduler: str
     steps: int = Field(gt=0)
     cfg: float
+    # Flux's distilled guidance (the workflow's ``$guidance`` slot, a FluxGuidance node). None: not used.
+    guidance: float | None = Field(default=None, ge=0)
     clip_skip: int = 1
     width: int = Field(gt=0)
     height: int = Field(gt=0)
@@ -81,6 +83,8 @@ class RequestRecord(BaseModel):
     vae: ModelRef | None = None
     loras: list[LoRARef] = Field(default_factory=list)
     workflow_sha256: Sha256 | None = None
+    # The template's name (its file stem, e.g. ``sdxl+lora1``), chosen by checkpoint family and LoRA count.
+    workflow: str | None = None
     engine: Literal["comfyui"] = "comfyui"
     engine_version: str | None = None
 

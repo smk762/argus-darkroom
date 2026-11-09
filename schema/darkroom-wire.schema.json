@@ -589,6 +589,18 @@
           ],
           "default": null
         },
+        "workflow": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow"
+        },
         "workflow_sha256": {
           "anyOf": [
             {
@@ -622,6 +634,19 @@
           "default": 1,
           "title": "Clip Skip",
           "type": "integer"
+        },
+        "guidance": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Guidance"
         },
         "height": {
           "exclusiveMinimum": 0,
