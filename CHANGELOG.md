@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-09
+
 ### Added
 
 - **A workflow per checkpoint family and LoRA count (#29).** `ARGUS_DARKROOM_WORKFLOW` may now name a directory of
