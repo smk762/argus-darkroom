@@ -98,8 +98,11 @@ class Demo:
     def comfyui(self, fake: FakeComfyUI, prompt_id: str, graph: dict):
         """Messages for one render, one at a time with a pause, so the progress bar moves."""
         sampler = next(n for n in graph.values() if n["class_type"] == "KSampler")
-        latent = next(n for n in graph.values() if n["class_type"] == "EmptyLatentImage")["inputs"]
-        positive = graph[sampler["inputs"]["positive"][0]]["inputs"]["text"]
+        latent = graph[sampler["inputs"]["latent_image"][0]]["inputs"]
+        node = graph[sampler["inputs"]["positive"][0]]
+        while "text" not in node["inputs"]:  # through FluxGuidance and the like, to the prompt
+            node = graph[node["inputs"]["conditioning"][0]]
+        positive = node["inputs"]["text"]
         self.markers = markers_in(str(positive))
         if self.nudenet is not None:
             score = 0.45 if "minor" in self.markers else 0.41 if "exposed" in self.markers else None
@@ -167,7 +170,10 @@ def main() -> None:
     parser.add_argument("--data", type=Path, default=ROOT / "demo-data", help="records, images and fake models")
     parser.add_argument("--fresh", action="store_true", help="start from an empty history")
     parser.add_argument(
-        "--workflow", default="sdxl.json", help="a file under examples/workflows (sdxl_lora.json adds a LoRA)"
+        "--workflow",
+        default="",
+        help="a file under examples/workflows, used for every checkpoint (default: the whole directory, chosen per "
+        "request by checkpoint family and LoRA count)",
     )
     parser.add_argument("--latency", type=float, default=0.4, help="seconds each fake SingGuard answer takes")
     parser.add_argument("--step-delay", type=float, default=0.1, help="seconds each fake ComfyUI step takes")
@@ -176,8 +182,13 @@ def main() -> None:
     if args.fresh:
         shutil.rmtree(args.data, ignore_errors=True)
     models = args.data / "models"
-    for kind, name in [("checkpoints", "demo-checkpoint.safetensors"), ("loras", "demo-style.safetensors")]:
-        (models / kind).mkdir(parents=True, exist_ok=True)
+    for kind, name in [
+        ("checkpoints", "sdxl/demo-checkpoint.safetensors"),
+        ("checkpoints", "flux/demo-flux.safetensors"),
+        ("loras", "demo-style.safetensors"),
+        ("loras", "demo-detail.safetensors"),
+    ]:
+        (models / kind / name).parent.mkdir(parents=True, exist_ok=True)
         (models / kind / name).write_bytes(name.encode())  # stand-ins: only their hashes are used
 
     demo = Demo(args.latency, args.step_delay)

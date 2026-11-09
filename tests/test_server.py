@@ -12,7 +12,7 @@ import pytest
 from argus_cortex.moderation import policies as policy_table
 from fake_comfyui import FakeComfyUI, event, grey_png
 from fakes import FakeFaces, safe_answer, unsafe_answer
-from rig import ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
+from rig import EXAMPLES, ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
 from argus_darkroom.comfyui import ComfyUIClient
@@ -120,13 +120,70 @@ def test_policies_with_the_flag(rig) -> None:
 
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
-        "checkpoints": [{"name": "base.safetensors"}],
+        # One workflow file (not a directory) serves every checkpoint, family or not.
+        "checkpoints": [{"name": "base.safetensors", "family": None, "lora_counts": [1]}],
         "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
+        "workflows": [
+            {
+                "name": "sdxl+lora1",
+                "family": None,
+                "loras": 1,
+                "slots": [
+                    "$base_checkpoint",
+                    "$cfg",
+                    "$clip_skip",
+                    "$height",
+                    "$negative",
+                    "$positive",
+                    "$sampler",
+                    "$scheduler",
+                    "$seed",
+                    "$steps",
+                    "$width",
+                ],
+            }
+        ],
         "samplers": ["euler", "dpmpp_2m"],  # what ComfyUI's KSampler accepts
         "schedulers": ["normal", "karras"],
     }
+
+
+def test_models_and_health_report_the_workflow_set(rig) -> None:
+    for name in ["sdxl/a.safetensors", "flux/f.safetensors", "illustrious/i.safetensors"]:
+        path = rig.root / "models" / "checkpoints" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(name.encode())
+    c = client(rig, workflow=EXAMPLES)
+    body = c.get("/models").json()
+    assert body["checkpoints"] == [
+        {"name": "base.safetensors", "family": None, "lora_counts": []},  # not in a family folder: cannot render
+        {"name": "flux/f.safetensors", "family": "flux", "lora_counts": [0, 1, 2]},
+        {"name": "illustrious/i.safetensors", "family": "illustrious", "lora_counts": []},
+        {"name": "sdxl/a.safetensors", "family": "sdxl", "lora_counts": [0, 1, 2]},
+    ]
+    by_name = {w["name"]: w for w in body["workflows"]}
+    assert set(by_name) == {
+        "sdxl",
+        "sdxl+lora1",
+        "sdxl+lora2",
+        "flux",
+        "flux+lora1",
+        "flux+lora2",
+        "flux-klein",
+        "sd35",
+    }
+    assert by_name["flux"]["family"] == "flux" and "$guidance" in by_name["flux"]["slots"]
+    assert "$negative" not in by_name["flux"]["slots"]
+    assert sorted(c.get("/health").json()["workflows"]) == sorted(by_name)
+
+    r = c.post(
+        "/generate/stream",
+        json=BODY | {"checkpoint": "sdxl/a.safetensors", "loras": [{"name": "style.safetensors"}] * 3},
+    )
+    assert r.status_code == 400 and "'sdxl' family with 3 LoRA" in r.json()["detail"]
+    assert not c.app.state.busy.locked()
 
 
 def test_models_names_the_configured_default(rig) -> None:
@@ -165,7 +222,9 @@ def test_models_without_comfyui_still_lists_the_files(rig) -> None:
     c = client(rig)
     c.app.state.engine.comfyui = ComfyUIClient("http://127.0.0.1:1", timeout=1)
     body = c.get("/models").json()
-    assert body["checkpoints"] == [{"name": "base.safetensors"}] and body["samplers"] == [] == body["schedulers"]
+    assert [c["name"] for c in body["checkpoints"]] == ["base.safetensors"] and body["samplers"] == [] == body[
+        "schedulers"
+    ]
 
 
 # --- pre-flight ----------------------------------------------------------------------------------------

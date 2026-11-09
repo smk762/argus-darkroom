@@ -95,6 +95,7 @@ def test_an_illegal_cell_deletes_and_leaves_no_bytes(rig, where) -> None:
     # the record still holds everything needed to regenerate it
     assert record.request.seed == 3 and record.request.checkpoint.sha256 and record.request.loras[0].sha256
     assert record.request.workflow_sha256 and record.request.final_prompt == "a cat, sks"
+    assert record.request.workflow == "sdxl+lora1"
     assert len(record.image.sha256) == 64
 
 

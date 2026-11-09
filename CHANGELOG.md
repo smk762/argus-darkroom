@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-09
+
+### Added
+
+- **A workflow per checkpoint family and LoRA count (#29).** `ARGUS_DARKROOM_WORKFLOW` may now name a directory of
+  `<family>.json` and `<family>+lora<N>.json` templates. Each request gets the one for its checkpoint's top-level
+  folder and number of LoRAs. When nothing fits, the request is a 400, never a substitute. A single file still serves
+  every checkpoint. The Docker image now defaults to the examples directory, so LoRAs are optional and the Flux, Flux
+  Klein and SD3.5 checkpoints can render.
+- Example templates `sdxl+lora2`, `flux`, `flux+lora1`, `flux+lora2`, `flux-klein` and `sd35`.
+- `sampling.guidance` fills a template's new `$guidance` slot (Flux's `FluxGuidance`). `request.workflow` in records
+  names the template used.
+- `/models` gives each checkpoint's `family` and `lora_counts`, and lists the `workflows` with their slots.
+  `/health` lists the workflow names.
+
+### Changed
+
+- `$negative` is optional in a template. A request with a negative prompt, `guidance` or a `clip_skip` above 2 is a
+  400 when the chosen template has no slot for it. Pre-flight still checks the negative prompt.
+- `examples/workflows/sdxl_lora.json` is now `sdxl+lora1.json`. Its content and hash are unchanged.
+- Under the Docker image's new default, a checkpoint renders only from a folder a template is named for (`sdxl/`,
+  `flux/`, `flux-klein/`, `sd35/`). One at the top of `checkpoints/` or in another folder (`pony/`, say) is now a 400,
+  where `sdxl.json` used to serve it. Set `ARGUS_DARKROOM_WORKFLOW` to a single file to keep one template for all.
+
 ## [0.1.2] - 2026-11-08
 
 ### Added
