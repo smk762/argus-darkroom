@@ -16,6 +16,7 @@ from typer import Argument, Option
 from argus_darkroom import __version__
 from argus_darkroom.config import PREFIX, ConfigError, Settings
 from argus_darkroom.request import MAX_CLIP_SKIP, GenerateRequest, LoRASpec, RequestError
+from argus_darkroom.workflow import WorkflowError
 
 app = typer.Typer(help="Guarded image generation: prompts and outputs are checked before anything is released.")
 
@@ -30,7 +31,7 @@ def _engine():
 
     try:
         return Engine(Settings.from_env())
-    except ConfigError as exc:
+    except (ConfigError, WorkflowError) as exc:  # a workflow that cannot be loaded is a setting that cannot run
         typer.echo(f"configuration error: {exc}", err=True)
         raise typer.Exit(EXIT_USAGE) from exc
 
@@ -196,7 +197,7 @@ def serve(
         os.environ[PREFIX + "CORS_ORIGINS"] = ",".join(cors_origin)
     try:
         application = create_app()
-    except ConfigError as exc:
+    except (ConfigError, WorkflowError) as exc:
         typer.echo(f"configuration error: {exc}", err=True)
         raise typer.Exit(EXIT_USAGE) from exc
     uvicorn.run(application, host=host, port=port)

@@ -260,6 +260,10 @@ def test_a_template_knows_its_lora_slots_and_scalar_slots() -> None:
         ("flux-klein/k.safetensors", "flux-klein"),
         ("a.safetensors", None),
         ("/a.safetensors", None),
+        # as the models root resolves the name, not as it is spelled
+        ("./sdxl/a.safetensors", "sdxl"),
+        ("sdxl/../flux/f.safetensors", "flux"),
+        ("sdxl/../a.safetensors", None),
     ],
 )
 def test_the_family_is_the_top_level_folder(checkpoint, family) -> None:
@@ -334,6 +338,7 @@ def test_an_empty_directory_is_refused_and_other_files_are_ignored(tmp_path) -> 
     with pytest.raises(WorkflowError, match="no workflow"):
         load_workflows(tmp_path)
     (tmp_path / "README.md").write_text("notes")
+    (tmp_path / "._sdxl.json").write_bytes(b"\x00\x05\x16\x07")  # what macOS leaves beside a file on a mounted volume
     assert load_workflows(write_set(tmp_path, sdxl=graph())).names == ["sdxl"]
 
 

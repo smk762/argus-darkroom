@@ -144,11 +144,11 @@ GenerationRecord (record_version "1.0", wire schema committed)
     user_prompt, expanded_prompt (null if Ollama is off), final_prompt, negative_prompt
     expansion: {model, system_prompt_sha256} | null
     seed
-    sampling: SamplingParams    # sampler, scheduler, steps, cfg, clip_skip, width, height
+    sampling: SamplingParams    # sampler, scheduler, steps, cfg, guidance (null unless set), clip_skip, width, height
     checkpoint: ModelRef        # name + sha256
     vae: ModelRef | null
     loras: [LoRARef]            # name, sha256, weight
-    workflow_sha256, engine "comfyui", engine_version
+    workflow_sha256, workflow (the template's name, e.g. "sdxl+lora1"), engine "comfyui", engine_version
   guard
     enforcing_policy, advisory_policies, thinking
     preflight: {policy: GuardResult}

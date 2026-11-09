@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `$negative` is optional in a template. A request with a negative prompt, `guidance` or a `clip_skip` above 2 is a
   400 when the chosen template has no slot for it. Pre-flight still checks the negative prompt.
 - `examples/workflows/sdxl_lora.json` is now `sdxl+lora1.json`. Its content and hash are unchanged.
+- Under the Docker image's new default, a checkpoint renders only from a folder a template is named for (`sdxl/`,
+  `flux/`, `flux-klein/`, `sd35/`). One at the top of `checkpoints/` or in another folder (`pony/`, say) is now a 400,
+  where `sdxl.json` used to serve it. Set `ARGUS_DARKROOM_WORKFLOW` to a single file to keep one template for all.
 
 ## [0.1.2] - 2026-11-08
 

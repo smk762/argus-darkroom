@@ -147,6 +147,14 @@ def test_serve_refuses_to_start_without_singguard(monkeypatch) -> None:
     assert result.exit_code == 1 and "unguarded" in result.output
 
 
+def test_serve_reports_a_workflow_that_cannot_be_loaded(monkeypatch, tmp_path, singguard) -> None:
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", singguard.url)
+    monkeypatch.setenv("ARGUS_DARKROOM_WORKFLOW", str(tmp_path))  # a directory with no template in it
+    result = runner.invoke(app, ["serve"])
+    assert result.exit_code == 1
+    assert "configuration error" in result.output and "holds no workflow" in plain(result.output)
+
+
 def test_serve_maps_its_flags_to_the_environment_and_binds_to_localhost(monkeypatch, tmp_path, singguard) -> None:
     import uvicorn
 

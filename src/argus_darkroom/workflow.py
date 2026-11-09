@@ -27,7 +27,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import posixpath
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,10 +46,6 @@ _WRITING_WORDS = ("save", "preview", "export", "write")
 _LORA = re.compile(r"^\$lora(?:_(\d+))?(_weight)?$")
 # A file in a workflow directory: ``sdxl.json``, ``sdxl+lora1.json``, ``flux-klein.json``.
 _SET_MEMBER = re.compile(r"^(?P<family>[^+/]+?)(?:\+lora(?P<loras>[1-9]\d*))?$")
-SCALARS = (
-    "$base_checkpoint", "$vae", "$positive", "$negative", "$seed", "$steps", "$cfg", "$guidance",
-    "$sampler", "$scheduler", "$width", "$height", "$clip_skip",
-)  # fmt: skip
 
 
 class WorkflowError(ValueError):
@@ -84,8 +82,11 @@ class Workflow:
 
 
 def checkpoint_family(checkpoint: str) -> str | None:
-    """The checkpoint's family: its top-level folder under ``checkpoints/``. None for a file at the top."""
-    head, sep, _ = checkpoint.partition("/")
+    """The checkpoint's family: its top-level folder under ``checkpoints/``. None for a file at the top.
+
+    The name is normalised first, as the models root resolves it, so ``sdxl/../flux/f`` is in ``flux``, not ``sdxl``.
+    """
+    head, sep, _ = posixpath.normpath(checkpoint).partition("/")
     return head if sep and head else None
 
 
@@ -182,7 +183,7 @@ def parse_workflow(
         name=name,
         family=family,
         lora_slots=lora_slots,
-        slots=frozenset(placeholders & set(SCALARS)),
+        slots=frozenset(placeholders & _SCALAR_VALUES.keys()),
     )
 
 
@@ -206,13 +207,15 @@ def load_workflows(path: str | Path) -> WorkflowSet:
 
     In a directory each ``*.json`` must be named ``<family>.json`` (no LoRA slots) or ``<family>+lora<N>.json``
     (exactly N), and every one must load: a misnamed or broken template refuses the whole set, not just itself.
-    Other files are ignored.
+    Other files are ignored, and so are hidden ones (``._flux.json``, which macOS leaves on a mounted volume).
     """
     path = Path(path)
     if not path.is_dir():
         return WorkflowSet((load_workflow(path),))
     found = []
     for file in sorted(path.glob("*.json")):
+        if file.name.startswith("."):
+            continue
         match = _SET_MEMBER.match(file.stem)
         if match is None:
             raise WorkflowError(f"{file}: a workflow in a directory is named <family>.json or <family>+lora<N>.json")
@@ -235,23 +238,27 @@ def clip_layer(clip_skip: int) -> int:
     return -max(clip_skip, 2)
 
 
+# Every scalar placeholder and where a run's value for it comes from: the one list both a template's ``slots`` and
+# :func:`render` go by.
+_SCALAR_VALUES: dict[str, Callable[[RenderParams], object]] = {
+    "$base_checkpoint": lambda p: p.checkpoint,
+    "$vae": lambda p: p.vae,
+    "$positive": lambda p: p.positive,
+    "$negative": lambda p: p.negative,
+    "$seed": lambda p: p.seed,
+    "$steps": lambda p: p.sampling.steps,
+    "$cfg": lambda p: p.sampling.cfg,
+    "$guidance": lambda p: p.sampling.guidance,
+    "$sampler": lambda p: p.sampling.sampler,
+    "$scheduler": lambda p: p.sampling.scheduler,
+    "$width": lambda p: p.sampling.width,
+    "$height": lambda p: p.sampling.height,
+    "$clip_skip": lambda p: clip_layer(p.sampling.clip_skip),
+}
+
+
 def _scalars(params: RenderParams) -> dict[str, object]:
-    s = params.sampling
-    return {
-        "$base_checkpoint": params.checkpoint,
-        "$vae": params.vae,
-        "$positive": params.positive,
-        "$negative": params.negative,
-        "$seed": params.seed,
-        "$steps": s.steps,
-        "$cfg": s.cfg,
-        "$guidance": s.guidance,
-        "$sampler": s.sampler,
-        "$scheduler": s.scheduler,
-        "$width": s.width,
-        "$height": s.height,
-        "$clip_skip": clip_layer(s.clip_skip),
-    }
+    return {slot: value(params) for slot, value in _SCALAR_VALUES.items()}
 
 
 def render(workflow: Workflow, params: RenderParams) -> dict:
