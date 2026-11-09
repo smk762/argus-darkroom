@@ -72,7 +72,7 @@ deletes every record and image. Leave it off anywhere you care about the output.
 uv pip install "argus-darkroom[server,cli]"
 export ARGUS_DARKROOM_SINGGUARD_URL=http://localhost:9150
 export ARGUS_DARKROOM_MODELS_ROOT=/path/to/ComfyUI/models
-export ARGUS_DARKROOM_WORKFLOW=examples/workflows/sdxl.json
+export ARGUS_DARKROOM_WORKFLOW=examples/workflows   # a directory: one template per family and LoRA count
 argus-darkroom serve            # 127.0.0.1:8106
 ```
 
@@ -89,12 +89,40 @@ curl -s localhost:8188/object_info/SaveImageWebsocket | head -c 200
 
 An empty `{}` means the node is not installed. The node does not write to disk, which is why darkroom can use it.
 
-### The workflow template
+### Workflow templates
 
-A ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, `$positive`, `$negative`, `$seed`,
-`$steps`, `$cfg`, `$sampler`, `$scheduler`, `$width`, `$height`, `$clip_skip`, and `$lora` / `$lora_weight`,
-`$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no other node that
-saves. See [`examples/workflows/`](examples/workflows).
+A template is a ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, `$positive`, `$negative`,
+`$seed`, `$steps`, `$cfg`, `$guidance`, `$sampler`, `$scheduler`, `$width`, `$height`, `$clip_skip`, and `$lora` /
+`$lora_weight`, `$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no
+other node that saves, and a `$positive` slot.
+
+`WORKFLOW` names a file or a directory:
+
+- **A directory** holds one template per checkpoint family and LoRA count, named `<family>.json` (no LoRA slots) or
+  `<family>+lora<N>.json` (exactly N). A checkpoint's family is its top-level folder under `checkpoints/`, so
+  `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
+  checkpoint outside a family folder, the request is a 400. Darkroom never falls back to another family's template or
+  LoRA count. A misnamed or broken file stops the server from starting.
+- **A file** is used for every checkpoint, as before. Every run must then fill its LoRA slots exactly.
+
+A template never silently drops a value the request sets. A request is a 400 if it sets something the chosen template
+has no slot for: a negative prompt (Flux takes none), `guidance`, or a `clip_skip` above 2. `/models` lists each
+template's `slots`, and each checkpoint's `family` and the LoRA counts it can render with (`lora_counts`, empty when
+none). Records name the template in `request.workflow`, beside `workflow_sha256`.
+
+[`examples/workflows/`](examples/workflows) ships these. They are the image's default directory:
+
+| Family | Files | Sampling |
+|---|---|---|
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
+| `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
+| `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |
+
+The Flux files under `checkpoints/` hold only the diffusion model, so `flux*.json` and `flux-klein.json` load the text
+encoders and VAE by name: `t5xxl_fp8_e4m3fn` and `clip_l` with `ae` for Flux, and `qwen_3_8b_fp8mixed` with
+`flux2-vae` for Klein. Edit those names to match your ComfyUI. The record pins them through `workflow_sha256`, not
+by their own hash. The non-SDXL families need more VRAM than SDXL and may run out of memory on smaller GPUs.
 
 `$clip_skip` is read as A1111 reads it for SDXL: `clip_skip` 1 and 2 both send `stop_at_clip_layer: -2`, the layer SDXL
 conditions on, and `n` above 2 sends `-n`. A request may ask for 1 to 12.
@@ -116,7 +144,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `OUTPUT_ROOT` | `darkroom-output` | `<id>.json` records and `<id>.png` images. |
 | `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
 | `DEFAULT_CHECKPOINT` | `sdxl` | The checkpoint a form starts on: an exact name, or a folder under `checkpoints/` for the first model in it. When nothing matches, `/models` reports null. |
-| `WORKFLOW` | | The template path. |
+| `WORKFLOW` | | A template file, used for every checkpoint, or a directory of them chosen per request (see [Workflow templates](#workflow-templates)). The image defaults to `/app/examples/workflows`. |
 | `CORS_ORIGINS` | `localhost` and `127.0.0.1` on ports 3000 and 3097 | May read and write. `*` allows reads only. Compose defaults to port 3000 only. |
 | `DEVMODE` | off | Adds `POST /purge` and `POST /purge/{id}`. |
 | `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
@@ -149,9 +177,9 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `workflows` (names) |
 | `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
-| `GET /models` | checkpoints and LoRAs as `{name}` objects, `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
+| `GET /models` | checkpoints as `{name, family, lora_counts}`, LoRAs as `{name}`, `workflows` as `{name, family, loras, slots}`, `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
 | `POST /generate/stream` | SSE: `preflight`, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
@@ -191,8 +219,9 @@ make smoke         # in another shell: 16 prompts, each checked against the outc
 | `[preflight-unchecked]` | pre-flight cannot be read | `refused` (`unchecked`) |
 | `[fail]` | ComfyUI errors in `KSampler` | `failed` |
 
-`python demo/run.py --help` lists `--host`, `--port`, `--cors-origin`, `--workflow` (use `sdxl_lora.json` to try LoRAs;
-the default `sdxl.json` has no LoRA slot, so a request with one is a 400), `--latency`, `--step-delay` and `--fresh`.
+`python demo/run.py --help` lists `--host`, `--port`, `--cors-origin`, `--workflow` (by default the whole examples
+directory, with fake `sdxl/` and `flux/` checkpoints and two LoRAs; name one file to use it for every checkpoint),
+`--latency`, `--step-delay` and `--fresh`.
 The demo turns `DEVMODE` and `ALLOW_NSFW` on and uses fake models. Bind it to a non-loopback host only on a network you
 trust. No real content is involved; the verdicts are canned.
 

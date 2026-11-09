@@ -16,10 +16,11 @@ from argus_darkroom.guard import Guard
 from argus_darkroom.hashing import sha256_cached
 from argus_darkroom.models import SamplingParams
 from argus_darkroom.request import GenerateRequest, RequestError
-from argus_darkroom.workflow import WorkflowError
+from argus_darkroom.workflow import WorkflowError, WorkflowSet, parse_workflow
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples" / "workflows"
 SAMPLING = SamplingParams(sampler="euler", scheduler="normal", steps=4, cfg=5.0, width=64, height=64)
+FLUX = SAMPLING.model_copy(update={"cfg": 1.0, "guidance": 3.5})
 
 
 @pytest.fixture
@@ -37,7 +38,7 @@ def models(tmp_path) -> Path:
     return root
 
 
-def make(fake: FakeComfyUI, tmp_path, models, workflow="sdxl_lora.json", **kw) -> Engine:
+def make(fake: FakeComfyUI, tmp_path, models, workflow="sdxl+lora1.json", **kw) -> Engine:
     settings = Settings(
         singguard_url="http://127.0.0.1:1",
         output_root=tmp_path / "out",
@@ -80,7 +81,8 @@ def test_render_returns_the_image_in_memory_and_a_record_that_reproduces_it(comf
         ("style.safetensors", 0.6, hashlib.sha256(b"lora bytes").hexdigest())
     ]
     assert rec.vae is None
-    assert rec.workflow_sha256 == eng.workflow.sha256
+    assert rec.workflow_sha256 == eng.workflows.workflows[0].sha256
+    assert rec.workflow == "sdxl+lora1"
     assert rec.engine == "comfyui" and rec.engine_version == "0.3.test"
 
 
@@ -105,11 +107,9 @@ def test_replaying_a_records_parameters_sends_the_same_graph(comfyui, tmp_path, 
 
 def test_models_are_hashed_once_and_found_in_subfolders_and_with_a_vae(comfyui, tmp_path, models) -> None:
     eng = make(comfyui, tmp_path, models)
-    template = json.loads((EXAMPLES / "sdxl_lora.json").read_text())
+    template = json.loads((EXAMPLES / "sdxl+lora1.json").read_text())
     template["8"]["inputs"]["vae"] = "$vae"
-    path = tmp_path / "vae.json"
-    path.write_text(json.dumps(template))
-    eng.workflow = type(eng.workflow)(template, eng.workflow.sha256, eng.workflow.save_node_id)
+    eng.workflows = WorkflowSet((parse_workflow(template, name="vae"),))
     out = eng.render(request(checkpoint="sub/other.safetensors", vae="v.safetensors"))
     assert out.request.vae.sha256 == sha256_cached(models / "vae" / "v.safetensors")
     assert comfyui.graphs[0]["8"]["inputs"]["vae"] == "v.safetensors"
@@ -148,7 +148,7 @@ def test_no_models_root_is_a_request_error(comfyui, tmp_path) -> None:
 
 def test_no_workflow_is_a_request_error(comfyui, tmp_path, models) -> None:
     eng = make(comfyui, tmp_path, models)
-    eng.workflow = None
+    eng.workflows = None
     with pytest.raises(RequestError, match="no workflow"):
         eng.render(request())
 
@@ -211,3 +211,57 @@ def test_a_failed_generation_leaves_no_history(tmp_path, models) -> None:
         with pytest.raises(GenerationError, match="boom"):
             make(fake, tmp_path, models).render(request())
         assert fake.history == {}
+
+
+# --- a directory of workflows: chosen per request ------------------------------------------------------
+
+
+@pytest.fixture
+def families(tmp_path) -> Path:
+    root = tmp_path / "family-models"
+    for kind, name in [
+        ("checkpoints", "sdxl/a.safetensors"),
+        ("checkpoints", "flux/f.safetensors"),
+        ("checkpoints", "flux-klein/k.safetensors"),
+        ("checkpoints", "flat.safetensors"),
+        ("loras", "one.safetensors"),
+        ("loras", "two.safetensors"),
+    ]:
+        (root / kind / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / kind / name).write_bytes(name.encode())
+    return root
+
+
+def loras(*names: str) -> list[dict]:
+    return [{"name": name, "weight": 0.5} for name in names]
+
+
+def test_the_workflow_follows_the_checkpoint_family_and_lora_count(comfyui, tmp_path, families) -> None:
+    eng = make(comfyui, tmp_path, families, workflow="")  # the examples directory: the whole set
+    sdxl = eng.render(request(checkpoint="sdxl/a.safetensors", loras=loras("one.safetensors", "two.safetensors")))
+    assert sdxl.request.workflow == "sdxl+lora2"
+    assert {comfyui.graphs[0]["10"]["inputs"]["lora_name"], comfyui.graphs[0]["12"]["inputs"]["lora_name"]} == {
+        "one.safetensors",
+        "two.safetensors",
+    }
+    flux = eng.render(request(checkpoint="flux/f.safetensors", negative_prompt="", sampling=FLUX, loras=[]))
+    assert flux.request.workflow == "flux"
+    assert flux.request.sampling.guidance == 3.5
+    assert flux.request.workflow_sha256 == eng.workflows.select("flux/f.safetensors", 0).sha256
+    assert comfyui.graphs[1]["14"]["inputs"]["guidance"] == 3.5
+    assert comfyui.graphs[1]["4"]["inputs"]["ckpt_name"] == "flux/f.safetensors"
+
+
+@pytest.mark.parametrize(
+    ("kw", "message"),
+    [
+        ({"checkpoint": "flux-klein/k.safetensors", "loras": loras("one.safetensors")}, "'flux-klein' family with 1"),
+        ({"checkpoint": "flat.safetensors", "loras": []}, "not in a family folder"),
+        ({"checkpoint": "flux/f.safetensors", "loras": [], "sampling": FLUX}, "negative prompt"),  # flux takes none
+    ],
+)
+def test_no_fitting_workflow_fails_before_comfyui_is_asked_anything(comfyui, tmp_path, families, kw, message) -> None:
+    eng = make(comfyui, tmp_path, families, workflow="")  # the examples directory: the whole set
+    with pytest.raises(RequestError, match=message):
+        eng.begin(request(**kw))
+    assert comfyui.calls == []

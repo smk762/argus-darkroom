@@ -40,11 +40,12 @@ RUN uv pip install --system --no-cache "certifi>=2026.10.19" "$(ls /wheel/*.whl)
 # The age check (the `age` extra) pulls in onnxruntime and InsightFace and needs the MiVOLO model file, so it is left
 # out of the image; /health reports it as unavailable and records get `age: null`.
 
-# The example workflows are the default template; mount your own and set ARGUS_DARKROOM_WORKFLOW to use it.
+# The example workflows are the default set, one per checkpoint family and LoRA count. Mount your own file or
+# directory and set ARGUS_DARKROOM_WORKFLOW to use it.
 COPY examples ./examples
 ENV ARGUS_DARKROOM_OUTPUT_ROOT=/data \
     ARGUS_DARKROOM_MODELS_ROOT=/models \
-    ARGUS_DARKROOM_WORKFLOW=/app/examples/workflows/sdxl.json
+    ARGUS_DARKROOM_WORKFLOW=/app/examples/workflows
 
 # Records and images live in /data, so give the unprivileged user that and nothing else.
 RUN useradd --system --uid 10001 --no-create-home darkroom \

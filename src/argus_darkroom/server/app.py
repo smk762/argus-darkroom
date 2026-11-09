@@ -3,7 +3,7 @@
 ========================  =====================================================================================
 ``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
-``GET /models``           checkpoints, LoRAs and VAEs found under the models root, and ``default_checkpoint``
+``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
 ``POST /generate/stream`` SSE: ``preflight``, ``queued``, ``progress``, ``scan``, ``complete``; one at a time
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
@@ -51,6 +51,7 @@ from argus_darkroom.modelfiles import pick_default
 from argus_darkroom.models import GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
 from argus_darkroom.store import valid_id
+from argus_darkroom.workflow import checkpoint_family
 
 logger = structlog.get_logger()
 
@@ -179,7 +180,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
             "expansion_enabled": cfg.expansion_enabled,
-            "workflow_loaded": engine.workflow is not None,
+            "workflow_loaded": engine.workflows is not None,
+            "workflows": engine.workflows.names if engine.workflows else [],
             "devmode": cfg.devmode,
             "read_only": cfg.read_only,
             "generating": busy.locked(),
@@ -210,13 +212,23 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
 
     @app.get("/models")
     def models() -> dict:
+        workflows = engine.workflows
         try:
             checkpoints = engine.models.names("checkpoint")
             found = {
-                "checkpoints": [{"name": n} for n in checkpoints],
+                # lora_counts: the LoRA counts a workflow renders this checkpoint with. Empty: it cannot be rendered.
+                "checkpoints": [
+                    {
+                        "name": n,
+                        "family": checkpoint_family(n),
+                        "lora_counts": workflows.lora_counts(n) if workflows else [],
+                    }
+                    for n in checkpoints
+                ],
                 "default_checkpoint": pick_default(checkpoints, cfg.default_checkpoint),
                 "loras": [{"name": n} for n in engine.models.names("lora")],
                 "vaes": [{"name": n} for n in engine.models.names("vae")],
+                "workflows": [w.describe() for w in workflows.workflows] if workflows else [],
             }
         except RequestError as exc:
             raise HTTPException(400, str(exc)) from exc
