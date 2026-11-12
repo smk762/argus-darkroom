@@ -21,17 +21,24 @@ not be broken and where things are.
 - **The age is a tool's estimate.** Name it `age_estimate_years`, source `mivolo`. Never call it an age, and never send
   it to SingGuard as context.
 - **No real sexual, violent or illegal content** in the repo or tests. Drive the illegal path with a fake verdict.
+- **An input image is judged like an output, and goes on only on `passed`.** Image-to-image runs the same scans and
+  `decide` on the input after the text pre-flight and before anything reaches ComfyUI; any other outcome (review,
+  omitted, deleted, unchecked) refuses. The input is never written to disk: it travels as base64 inside the graph to
+  `DarkroomLoadImageBase64` (`comfyui/`), the history delete removes it, and the record keeps only its hashes. No
+  template may load an image any other way.
 
 ## Layout
 
 | | |
 |---|---|
-| `engine.py` | `Engine`: `begin` validates, `_run` expands, pre-flights, renders, scans, decides, releases or destroys |
+| `engine.py` | `Engine`: `begin` validates, `_run` expands, pre-flights, scans an input image (`check_input`), renders, scans, decides, releases or destroys |
 | `outcome.py` | the outcome table (`decide`). Precedence: deleted, omitted (SFW), review, passed. Unit-test any change by cell combination |
 | `preflight.py`, `scan.py`, `guard.py` | the text check, the image scans, and the SingGuard wrapper that turns failures into `unchecked` |
 | `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
-| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family and LoRA count), model sha256s |
+| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and `+img2img`), model sha256s |
+| `images.py` | an image's hashes (`describe`), and `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent |
+| `comfyui/` | not in the package: `DarkroomLoadImageBase64`, the ComfyUI custom node image-to-image needs (base64 in, `IMAGE` out, no disk) |
 | `age.py` | curator over `AGE_URL` (`POST /faces?body=true`), or in-process `detect_faces` behind the `[age]` extra |
 | `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |

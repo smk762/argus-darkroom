@@ -5,7 +5,7 @@
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
 ``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
-``POST /generate/stream`` SSE: ``preflight``, ``queued``, ``progress``, ``scan``, ``complete``; one at a time
+``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
 ``GET /image/{id}``       ids only, no path input; 404 with the record id when there is no stored image
 ``DELETE /record/{id}``   the user removing their own output: the file goes, the record stays
@@ -217,11 +217,13 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             checkpoints = engine.models.names("checkpoint")
             found = {
                 # lora_counts: the LoRA counts a workflow renders this checkpoint with. Empty: it cannot be rendered.
+                # img2img_lora_counts: the same for image-to-image. Empty: it takes no input image.
                 "checkpoints": [
                     {
                         "name": n,
                         "family": checkpoint_family(n),
                         "lora_counts": workflows.lora_counts(n) if workflows else [],
+                        "img2img_lora_counts": workflows.lora_counts(n, img2img=True) if workflows else [],
                     }
                     for n in checkpoints
                 ],

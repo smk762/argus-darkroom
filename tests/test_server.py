@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import threading
@@ -121,7 +122,7 @@ def test_policies_with_the_flag(rig) -> None:
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
         # One workflow file (not a directory) serves every checkpoint, family or not.
-        "checkpoints": [{"name": "base.safetensors", "family": None, "lora_counts": [1]}],
+        "checkpoints": [{"name": "base.safetensors", "family": None, "lora_counts": [1], "img2img_lora_counts": []}],
         "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
@@ -130,6 +131,7 @@ def test_models(rig) -> None:
                 "name": "sdxl+lora1",
                 "family": None,
                 "loras": 1,
+                "img2img": False,
                 "slots": [
                     "$base_checkpoint",
                     "$cfg",
@@ -157,17 +159,20 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         path.write_bytes(name.encode())
     c = client(rig, workflow=EXAMPLES)
     body = c.get("/models").json()
-    assert body["checkpoints"] == [
+    assert [{k: v for k, v in c.items() if k != "img2img_lora_counts"} for c in body["checkpoints"]] == [
         {"name": "base.safetensors", "family": None, "lora_counts": []},  # not in a family folder: cannot render
         {"name": "flux/f.safetensors", "family": "flux", "lora_counts": [0, 1, 2]},
         {"name": "illustrious/i.safetensors", "family": "illustrious", "lora_counts": []},
         {"name": "sdxl/a.safetensors", "family": "sdxl", "lora_counts": [0, 1, 2]},
     ]
+    assert [c["img2img_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1]]
     by_name = {w["name"]: w for w in body["workflows"]}
     assert set(by_name) == {
         "sdxl",
         "sdxl+lora1",
         "sdxl+lora2",
+        "sdxl+img2img",
+        "sdxl+lora1+img2img",
         "flux",
         "flux+lora1",
         "flux+lora2",
@@ -760,3 +765,55 @@ def test_requests_without_an_origin_are_not_browser_writes(rig) -> None:
 
 def test_grey_png_helper_is_a_real_png() -> None:
     assert grey_png().startswith(b"\x89PNG") and safe_answer()["safe"]
+
+
+# --- image-to-image ------------------------------------------------------------------------------------
+
+
+def test_the_stream_carries_the_input_scan_before_the_render(rig) -> None:
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+img2img.json")
+    events = stream_events(c, {"init_image": {"data_base64": base64.b64encode(grey_png(32)).decode()}})
+    kinds = [k for k, _ in events]
+    assert kinds == [
+        "preflight", "input_scan", "input_scan", "queued", "progress", "progress", "scan", "scan", "complete",
+    ]  # fmt: skip
+    assert events[1][1]["policy"] == "default" and events[1][1]["context"] == "isolated"
+    assert events[2][1]["context"] == "with_prompt" and events[2][1]["cell"]["state"] == "safe"
+    record = events[-1][1]["record"]
+    assert record["outcome"] == "passed" and record["guard"]["input"]["outcome"] == "passed"
+    assert record["request"]["init_image"]["denoise"] == 0.5
+    assert c.get(f"/record/{record['id']}").json() == record
+
+
+def test_a_refused_input_streams_no_render(rig) -> None:
+    rig.nudenet.labels = {"FEMALE_BREAST_EXPOSED": 0.9}
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+img2img.json")
+    events = stream_events(c, {"init_image": {"data_base64": base64.b64encode(grey_png(32)).decode()}})
+    assert [k for k, _ in events] == ["preflight", "input_scan", "input_scan", "complete"]
+    record = events[-1][1]["record"]
+    assert (record["outcome"], record["outcome_reason"]) == ("refused", "input image: sfw-exposed")
+    assert c.get(f"/image/{record['id']}").status_code == 404
+    assert rig.comfyui.calls == []
+
+
+@pytest.mark.parametrize(
+    ("init_image", "status"),
+    [
+        ({"data_base64": "not base64!"}, 400),
+        ({"data_base64": "aGVsbG8="}, 400),  # base64 of text, not a picture
+        ({"data_base64": "aGVsbG8=", "denoise": 0}, 422),  # a field out of range, like nsfw_threshold
+        ({"data_base64": "aGVsbG8=", "mask": "x"}, 422),
+    ],
+)
+def test_a_bad_input_is_refused_before_the_stream_opens(rig, init_image, status) -> None:
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+img2img.json")
+    assert c.post("/generate/stream", json=BODY | {"init_image": init_image}).status_code == status
+    assert not c.app.state.busy.locked()
+    assert rig.singguard.requests == [] and rig.comfyui.calls == []
+
+
+def test_an_input_with_no_image_to_image_template_is_a_400(rig) -> None:
+    c = client(rig)
+    r = c.post("/generate/stream", json=BODY | {"init_image": {"data_base64": base64.b64encode(grey_png()).decode()}})
+    assert r.status_code == 400 and "no image-to-image workflow" in r.json()["detail"]
+    assert generate(c)["outcome"] == "passed"  # text-to-image is unaffected, and the lock was released

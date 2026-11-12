@@ -42,7 +42,7 @@ class Rig:
             nudenet_url=kw.pop("nudenet_url", nudenet.url),
             output_root=self.out,
             models_root=models,
-            workflow=EXAMPLES / "sdxl+lora1.json",
+            workflow=kw.pop("workflow", EXAMPLES / "sdxl+lora1.json"),
             **kw,
         )
         self.settings = settings
