@@ -23,8 +23,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sdxl+img2img` and `sdxl+lora1+img2img`. `/models` gives each checkpoint's `img2img_lora_counts` and each
   workflow's `img2img` flag.
 
+- **Inpainting.** `init_image` may carry `mask_base64` (PNG, JPEG or WebP, the image's limits, exactly the input's
+  size once upright; white repaints, black keeps). Only the masked region is repainted; the example templates composite
+  the result over the scaled input, so every pixel outside the (8 px grown) mask is the input's. The input is judged
+  exactly as for image-to-image. The mask is a region selector with no imagery, so it is not scanned; it is cut at 128
+  into a 1-bit PNG, sent inside the graph like the input, and never written. A mask that does not decode, is the wrong
+  size or masks nothing is a 400. Records gain `request.init_image.mask` (`sha256`, `source_sha256`,
+  `masked_fraction`; additive, `record_version` stays 1.0).
+- `DarkroomLoadMaskBase64`, in the same vendored file as `DarkroomLoadImageBase64`: copy the file into ComfyUI's
+  `custom_nodes/` again and restart ComfyUI.
+- Inpainting templates, named `<family>[+lora<N>]+inpaint.json`, with `$init_image`, `$init_mask` and `$denoise`;
+  examples `sdxl+inpaint` and `sdxl+lora1+inpaint`. A mask with no inpainting template is a 400. `/models` gives each
+  checkpoint's `inpaint_lora_counts` and each workflow's `mode` (`txt2img`, `img2img`, `inpaint`).
+
 ### Changed
 
+- A workflow's `img2img` flag in `/models` is true for plain image-to-image only, not for inpainting.
+  `WorkflowSet.select` and `lora_counts` take a `mode` instead of an `img2img` flag.
 - A template with a node that loads an image from ComfyUI's disk (`LoadImage` and the like) is refused at load: an
   image reaches a run only as a checked input.
 

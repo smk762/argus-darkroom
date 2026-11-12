@@ -8,6 +8,9 @@ omitted one is simply not, and its buffer goes out of scope. A record is kept fo
 An input image gets the same checks an output does, before anything reaches ComfyUI, and the run goes on only if its
 outcome is ``passed``. It is never written: it reaches ComfyUI inside the graph, which is deleted from ComfyUI's
 history after the run.
+
+An inpainting mask travels the same way and is never written either, but it is not scanned: it only says which
+pixels of the checked input are repainted, and carries no imagery. The output is scanned and decided as usual.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from argus_darkroom.comfyui import ComfyUIClient, GenerationError, Progress
 from argus_darkroom.config import Settings
 from argus_darkroom.expansion import ExpansionError, OllamaExpander
 from argus_darkroom.guard import Guard
-from argus_darkroom.images import InputImage, UnreadableImage, describe, load_input
+from argus_darkroom.images import InputImage, InputMask, UnreadableImage, describe, load_input, load_mask
 from argus_darkroom.modelfiles import ModelLibrary
 from argus_darkroom.models import (
     AgeRecord,
@@ -36,6 +39,7 @@ from argus_darkroom.models import (
     InitImageRef,
     InputScanRecord,
     LoRARef,
+    MaskRef,
     ModelRef,
     NudeNetRecord,
     RequestRecord,
@@ -48,6 +52,7 @@ from argus_darkroom.scan import Scan, Scanner
 from argus_darkroom.store import RecordStore, new_id
 from argus_darkroom.workflow import (
     SAVE_NODE,
+    Mode,
     RenderParams,
     Workflow,
     WorkflowError,
@@ -84,6 +89,8 @@ class Prepared:
     # Image-to-image: the input, decoded and held in memory only, and its denoise. None for text-to-image.
     init: InputImage | None = None
     denoise: float | None = None
+    # Inpainting: the mask, decoded and held in memory only. Never scanned: it carries no imagery.
+    mask: InputMask | None = None
 
     @property
     def init_ref(self) -> InitImageRef | None:
@@ -97,6 +104,13 @@ class Prepared:
             height=image.height,
             source_sha256=self.init.source_sha256,
             denoise=self.denoise,
+            mask=None
+            if self.mask is None
+            else MaskRef(
+                sha256=self.mask.sha256,
+                source_sha256=self.mask.source_sha256,
+                masked_fraction=self.mask.masked_fraction,
+            ),
         )
 
 
@@ -290,13 +304,17 @@ class Engine:
         if request.sampling is None or not request.checkpoint:
             raise RequestError("a generation needs sampling parameters and a checkpoint")
         init: InputImage | None = None
+        mask: InputMask | None = None
         if request.init_image is not None:
             try:
                 init = load_input(request.init_image.data_base64)
+                if request.init_image.mask_base64 is not None:
+                    mask = load_mask(request.init_image.mask_base64, (init.record.width, init.record.height))
             except UnreadableImage as exc:
                 raise RequestError(str(exc)) from exc
+        mode: Mode = "txt2img" if init is None else "img2img" if mask is None else "inpaint"
         try:
-            workflow = self.workflows.select(request.checkpoint, len(request.loras), img2img=init is not None)
+            workflow = self.workflows.select(request.checkpoint, len(request.loras), mode)
         except WorkflowError as exc:
             raise RequestError(str(exc)) from exc
         prepared = Prepared(
@@ -307,6 +325,7 @@ class Engine:
             loras=tuple(self.models.lora_ref(lora.name, lora.weight, lora.trigger_words) for lora in request.loras),
             init=init,
             denoise=request.init_image.denoise if request.init_image is not None else None,
+            mask=mask,
         )
         try:  # the template's slots must fit this request: better a 400 now than a failure later
             render(workflow, self._params(request, prepared, ""))
@@ -327,6 +346,7 @@ class Engine:
             loras=prepared.loras,
             init_image=prepared.init.base64 if prepared.init is not None else None,
             denoise=prepared.denoise,
+            init_mask=prepared.mask.base64 if prepared.mask is not None else None,
         )
 
     def render(
@@ -431,6 +451,8 @@ class Engine:
 
         The input may go on only when the outcome is ``passed``. Anything else (deleted, omitted, review, an
         enforcing cell that could not be checked) refuses the attempt: an input is not served behind a shield.
+
+        An inpainting mask is not part of this scan: it is a region selector, not imagery.
         """
         enforcing, advisory = self.policies(request)
         scan = self.scanner.scan(
@@ -526,7 +548,8 @@ class Engine:
         )
 
         # Image-to-image: the input is judged before anything reaches ComfyUI, by the same checks as an output, and
-        # goes on only if it passes. A refused input is not written anywhere: the record is all that is kept.
+        # goes on only if it passes. A refused input is not written anywhere: the record is all that is kept. An
+        # inpainting mask is not scanned (it carries no imagery), and is not written either.
         if prepared.init is not None:
             guard_record.input, verdict = self.check_input(
                 request,

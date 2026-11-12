@@ -1,7 +1,8 @@
 """What is kept of an image whether or not its pixels are: sha256, perceptual hash and size.
 
 Also the image-to-image input: decoded from the request's base64 once, into the one PNG that is both judged and sent
-to ComfyUI, so what was checked is exactly what is rendered from.
+to ComfyUI, so what was checked is exactly what is rendered from. And the inpainting mask, decoded the same way into a
+black-and-white PNG; it selects a region and carries no imagery, so it is never scanned.
 """
 
 from __future__ import annotations
@@ -74,35 +75,107 @@ class InputImage:
         return base64.b64encode(self.png).decode("ascii")
 
 
-def load_input(data_base64: str) -> InputImage:
-    """Decode an image-to-image input from base64. Raises :class:`UnreadableImage` with the reason it is refused:
-    not base64, over :data:`MAX_INPUT_BYTES` decoded, not a PNG, JPEG or WebP, an edge over :data:`MAX_INPUT_EDGE`,
-    or pixels that do not decode."""
+def _decode_upright(data_base64: str, what: str) -> tuple[Image.Image, str]:
+    """Decode *data_base64* (the request's *what*, e.g. "the init image") into an upright image and the sha256 of the
+    bytes sent. Raises :class:`UnreadableImage` with the reason it is refused: not base64, over
+    :data:`MAX_INPUT_BYTES` decoded, not a PNG, JPEG or WebP, an edge over :data:`MAX_INPUT_EDGE`, or pixels that do
+    not decode."""
     if len(data_base64) > _MAX_INPUT_BASE64:
-        raise UnreadableImage(f"the init image is over {MAX_INPUT_BYTES // (1024 * 1024)} MiB")
+        raise UnreadableImage(f"{what} is over {MAX_INPUT_BYTES // (1024 * 1024)} MiB")
     try:
         data = base64.b64decode(data_base64, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise UnreadableImage("the init image is not valid base64") from exc
+        raise UnreadableImage(f"{what} is not valid base64") from exc
     if not data:
-        raise UnreadableImage("the init image is empty")
+        raise UnreadableImage(f"{what} is empty")
     if len(data) > MAX_INPUT_BYTES:
-        raise UnreadableImage(f"the init image is over {MAX_INPUT_BYTES // (1024 * 1024)} MiB")
+        raise UnreadableImage(f"{what} is over {MAX_INPUT_BYTES // (1024 * 1024)} MiB")
     try:
         with Image.open(io.BytesIO(data), formats=INPUT_FORMATS) as img:
             # The size is known from the header: refuse before the pixels are decoded.
             if max(img.size) > MAX_INPUT_EDGE:
-                raise UnreadableImage(
-                    f"the init image is {img.width}x{img.height}; an edge may be {MAX_INPUT_EDGE} at most"
-                )
+                raise UnreadableImage(f"{what} is {img.width}x{img.height}; an edge may be {MAX_INPUT_EDGE} at most")
             img.load()
             upright = ImageOps.exif_transpose(img)
-            rgb = upright.convert("RGB")
+            upright.load()
     except UnreadableImage:
         raise
     except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise UnreadableImage(f"{what} cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
+    return upright, hashlib.sha256(data).hexdigest()
+
+
+def load_input(data_base64: str) -> InputImage:
+    """Decode an image-to-image input from base64. Raises :class:`UnreadableImage` with the reason it is refused:
+    not base64, over :data:`MAX_INPUT_BYTES` decoded, not a PNG, JPEG or WebP, an edge over :data:`MAX_INPUT_EDGE`,
+    or pixels that do not decode."""
+    upright, source_sha256 = _decode_upright(data_base64, "the init image")
+    try:
+        rgb = upright.convert("RGB")
+    except (OSError, ValueError) as exc:
         raise UnreadableImage(f"the init image cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     buf = io.BytesIO()
     rgb.save(buf, "PNG")
     png = buf.getvalue()
-    return InputImage(png=png, record=describe(png, allow_blank=True), source_sha256=hashlib.sha256(data).hexdigest())
+    return InputImage(png=png, record=describe(png, allow_blank=True), source_sha256=source_sha256)
+
+
+@dataclass(frozen=True)
+class InputMask:
+    """An inpainting mask, held in memory only: white (set) repaints, black keeps.
+
+    It selects a region of the input image; it carries no imagery of its own, so it is not scanned. *png* is the mask
+    as ComfyUI gets it: decoded, turned upright by its EXIF orientation like the image, made greyscale, cut at
+    :data:`MASK_THRESHOLD` into black and white, and re-encoded as a 1-bit PNG with no metadata.
+    """
+
+    png: bytes
+    sha256: str
+    source_sha256: str
+    width: int
+    height: int
+    # The share of pixels that are repainted, 0..1, to 4 decimals.
+    masked_fraction: float
+
+    def __repr__(self) -> str:  # never the pixels, in a log or a traceback
+        return f"InputMask(sha256={self.sha256}, {self.width}x{self.height}, masked={self.masked_fraction})"
+
+    @property
+    def base64(self) -> str:
+        return base64.b64encode(self.png).decode("ascii")
+
+
+MASK_THRESHOLD = 128  # a grey at or above this repaints
+
+
+def load_mask(data_base64: str, size: tuple[int, int]) -> InputMask:
+    """Decode an inpainting mask from base64, for an input image of *size* (as judged: upright).
+
+    Raises :class:`UnreadableImage` with the reason it is refused: everything :func:`load_input` refuses, a size
+    (once upright) that is not exactly *size*, or nothing masked.
+    """
+    upright, source_sha256 = _decode_upright(data_base64, "the mask")
+    if upright.size != size:
+        raise UnreadableImage(
+            f"the mask is {upright.width}x{upright.height} but the init image is {size[0]}x{size[1]}: they must match"
+        )
+    try:
+        grey = upright.convert("L")
+    except (OSError, ValueError) as exc:
+        raise UnreadableImage(f"the mask cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
+    binary = grey.point(lambda v: 255 if v >= MASK_THRESHOLD else 0).convert("1", dither=Image.Dither.NONE)
+    histogram = binary.convert("L").histogram()
+    masked = histogram[255]
+    if masked == 0:
+        raise UnreadableImage("the mask masks nothing: paint the region to repaint white")
+    buf = io.BytesIO()
+    binary.save(buf, "PNG")
+    png = buf.getvalue()
+    return InputMask(
+        png=png,
+        sha256=hashlib.sha256(png).hexdigest(),
+        source_sha256=source_sha256,
+        width=binary.width,
+        height=binary.height,
+        masked_fraction=round(masked / (binary.width * binary.height), 4),
+    )

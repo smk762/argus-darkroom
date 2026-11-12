@@ -16,7 +16,7 @@ Darkroom sits off the main line, like argus-atlas: it uses what the line produce
 
 Do not rebuild these.
 
-- **ComfyUI** (`:8188`) generates. Darkroom sends it a workflow and collects the image over the websocket. Image-to-image needs one custom node of darkroom's own, `DarkroomLoadImageBase64` (vendored in `comfyui/`), which reads the input image from a base64 string in the graph instead of from ComfyUI's `input/` folder.
+- **ComfyUI** (`:8188`) generates. Darkroom sends it a workflow and collects the image over the websocket. Image-to-image needs one custom node of darkroom's own, `DarkroomLoadImageBase64` (vendored in `comfyui/`), which reads the input image from a base64 string in the graph instead of from ComfyUI's `input/` folder. Inpainting also needs `DarkroomLoadMaskBase64`, in the same file, which does the same for the mask.
 - **Ollama** (`:11434`), optional, expands a short prompt. It is never a guard.
 - **SingGuard server**: agent-composer's `/api/guard/check` (`:9150`, Ollama GGUF `SingGuard-4b`). It accepts `input`, an optional `image_base64`, `input_role`, `policy` text and `thinking` (`fast`, `fast-slow`, `slow`, `cascade`), and answers `{safe, verdict, rule, rule_text, explanation, categories, model, thinking, elapsed_ms}`. A text-only check (no image) is how pre-flight works. Darkroom depends on that PR (agent-composer #4) being merged. A separate argus moderation-service package may replace it later; the client must not care which.
 - **NudeNet server**, over HTTP. Never imported (AGPL).
@@ -38,7 +38,7 @@ One generation runs through these steps, and the user sees each one.
    - Unsafe under the enforcing policy on non-illegal rules only: **refused** in SFW mode, with the reason. In NSFW mode the verdict is shown as a warning and generation proceeds, and the output scan decides (see [Mode](#mode)).
    - Advisory policies that flag are shown, not acted on.
    - A failed check is a refusal, recorded as `unchecked`.
-3. **Input scan** (image-to-image only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt.
+3. **Input scan** (image-to-image and inpainting only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt.
 4. **Generate.** ComfyUI renders with `SaveImageWebsocket`. The bytes come back over the websocket and are held in memory only. Darkroom then deletes the prompt from ComfyUI's history.
 5. **Scan.** For each selected policy, SingGuard judges the image twice: **isolated** (no text) and **with prompt** (the framed final prompt as the user turn). NudeNet scores the exposed classes once. If the age check is available, MiVOLO estimates an age for each detected face. Requests use the configured thinking mode, `cascade` by default. The age estimate is never sent to SingGuard as context: the isolated scan has to stay text-free, and the with-prompt scan measures the prompt alone.
 6. **Decide**, from the scans (see [Verdicts](#verdicts)): **passed**, **review** or **deleted**.
@@ -56,7 +56,17 @@ Image-to-image adds a second input, the caller's image, and so a second pre-flig
 - **Never written.** Nothing is written for a refused input except the record. A passed input is not written either: it travels to ComfyUI as base64 inside the prompt graph, to `DarkroomLoadImageBase64`, and darkroom's existing `/history` delete after the run removes it with the prompt. ComfyUI's stock `LoadImage` would need the file in its `input/` folder, so a template with any node that loads an image is refused at load. The caller keeps its own input; darkroom keeps its hashes.
 - **Templates by mode.** Image-to-image templates are separate files, `<family>[+lora<N>]+img2img.json`, with `$init_image` (the loader's `image`) and `$denoise`. A request with an input and no such template for its family and LoRA count is a 400; darkroom never falls back to text-to-image.
 
-Inpainting and reference images are not supported.
+### Inpainting
+
+Inpainting is image-to-image with a mask: `init_image.mask_base64` (PNG, JPEG or WebP, the same size and byte limits as the image), white where the input is repainted and black where it is kept. Only the masked region changes, at whatever `denoise` the request asks (inpainting usually wants a high one); every other pixel of the output is the input's.
+
+- **The mask is checked as a file, not judged as a picture.** It must decode, and once turned upright by its EXIF orientation, as the image is, it must be exactly the size of the (upright) input image. It is made greyscale and cut at 128 into black and white; a mask with nothing white is a 400. It is re-encoded as a 1-bit PNG with no metadata, and that is what ComfyUI gets. Anything else is a 400 before any check runs.
+- **The mask is not scanned.** It is a region selector: one bit per pixel saying "repaint here", with no imagery of its own. What could be harmful is the input it selects from, which gets its full pre-flight exactly as for image-to-image (and goes on only on `passed`), and the output, which is scanned and decided like any other. A mask cannot make a passed input show something the output scan does not then see. So the mask is sent to no guard: SingGuard, NudeNet and the age check see the input and the output only.
+- **Never written.** It travels to ComfyUI as base64 inside the prompt graph, to `DarkroomLoadMaskBase64`, and the `/history` delete after the run removes it with the input. The record keeps its hashes and the share of the input it masks.
+- **Unmasked pixels stay the input's.** The example templates scale the mask exactly as the image (to `$width` x `$height`, cropped to the centre), grow its edge by 8 pixels so the repaint blends, restrict the sampler's noise to it (`SetLatentNoiseMask`), and composite the decoded result over the scaled input through the same grown mask (`ImageCompositeMasked`). The VAE round trip would otherwise shift every pixel slightly; the composite keeps every pixel outside the grown mask exactly the scaled input's.
+- **Templates by mode.** Inpainting templates are `<family>[+lora<N>]+inpaint.json`, with `$init_image`, `$init_mask` (the mask loader's `mask`, exactly one) and `$denoise`. Only an inpainting template may contain the mask loader. A request with a mask and no such template is a 400; darkroom never drops the mask and renders image-to-image instead.
+
+Reference images (IP-Adapter and the like) are not supported.
 
 ## Policies
 
@@ -162,7 +172,8 @@ GenerationRecord (record_version "1.0", wire schema committed)
     vae: ModelRef | null
     loras: [LoRARef]            # name, sha256, weight
     workflow_sha256, workflow (the template's name, e.g. "sdxl+lora1"), engine "comfyui", engine_version
-    init_image: {sha256, phash, width, height, source_sha256, denoise} | null   # image-to-image; never the pixels
+    init_image: {sha256, phash, width, height, source_sha256, denoise, mask} | null   # image-to-image; never the pixels
+      mask: {sha256, source_sha256, masked_fraction} | null                          # inpainting; never the pixels
   guard
     enforcing_policy, advisory_policies, thinking
     preflight: {policy: GuardResult}
@@ -180,7 +191,7 @@ A deleted record has no pixels, thumbnail or preview of any kind; those would be
 ## What it does not do
 
 - **Write anything before the verdict.** No temporary file, no cortex blob or lineage write, no `SaveImage` or `PreviewImage` node. A workflow that contains a node that writes to disk is refused when it is loaded, not when it runs.
-- **Inpainting or reference images** (IP-Adapter and the like). Each is another input that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image).
+- **Reference images** (IP-Adapter and the like). Each is another picture that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image). An inpainting mask is not a picture, so it needs none: see [Inpainting](#inpainting).
 - **Training, captioning or scoring against a dataset.** Those are forge, lens and proof.
 - **Accept policy text in a request.** Policies are chosen by name only.
 - **Public hosting.** Not planned in the short or medium term. The server binds to localhost by default.
@@ -202,7 +213,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
-- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image: one per finished input cell), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409.
+- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409.
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
 - `GET /image/{id}`: ids only, no path input. A deleted, omitted or refused record answers 404 with the record id.
 - `DELETE /record/{id}`: the user removing their own output. This deletes the file; the record stays, marked as removed by the user.
@@ -211,7 +222,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `POST /purge/{id}`: deletes one record and its stored image, with the same confirm body, the same refusal during a generation, and the same 404 without `ARGUS_DARKROOM_DEVMODE=1`. Refused and deleted records are the audit trail, so outside devmode a record can only lose its image, through `DELETE /record/{id}`.
 - `WriteGuard` and `cross_site_refuse` from cortex. CORS allows reads by default; writes are allowed only from the configured origins (`ARGUS_DARKROOM_CORS_ORIGINS`).
 
-**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `DEFAULT_CHECKPOINT` (default `sdxl`: an exact name, or a folder for the first model in it), `WORKFLOW` (a template file for every checkpoint, or a directory of `<family>.json` / `<family>+lora<N>.json` templates, each optionally ending `+img2img`, chosen per request by the checkpoint's top-level folder, LoRA count and whether there is an input image; nothing fitting is a 400, never a substitute), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
+**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `DEFAULT_CHECKPOINT` (default `sdxl`: an exact name, or a folder for the first model in it), `WORKFLOW` (a template file for every checkpoint, or a directory of `<family>.json` / `<family>+lora<N>.json` templates, each optionally ending `+img2img` or `+inpaint`, chosen per request by the checkpoint's top-level folder, LoRA count and whether there is an input image and a mask; nothing fitting is a 400, never a substitute), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. An empty `SINGGUARD_URL` makes the server refuse to start. Darkroom never runs unguarded.
 
 **Store:** one flat `<id>.json` per record, the same pattern as curator's `ScanStore`. Images go under `<output_root>/<id>.png`.
 
@@ -225,6 +236,7 @@ No real sexual, violent or illegal content goes in the repo or the tests.
 - A test that a deleted or omitted outcome leaves no bytes anywhere: the output root, the system temp directory and the fake ComfyUI history. The test lists all three before and after.
 - A test that a workflow containing a disk-writing node is refused at load.
 - Image-to-image: an input refused for each reason (illegal, flagged under SFW, exposed under SFW, minor-exposed, SingGuard or NudeNet unreachable) reaches no part of ComfyUI and leaves no bytes, listed as above; a text refusal comes first and the input is never scanned.
+- Inpainting: the input is scanned exactly as for image-to-image and the mask reaches no guard; a refused input with a mask reaches no part of ComfyUI and the mask's bytes are in no file; a mask of the wrong size, that does not decode, or that masks nothing is a 400 before any check.
 - Mode tests:
   - `default` and `sfw-*` names are SFW, and everything else is NSFW.
   - A non-illegal pre-flight flag refuses under an SFW enforcing policy and proceeds under an NSFW one; an illegal flag refuses under both.

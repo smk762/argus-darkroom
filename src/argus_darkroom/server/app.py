@@ -218,12 +218,14 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             found = {
                 # lora_counts: the LoRA counts a workflow renders this checkpoint with. Empty: it cannot be rendered.
                 # img2img_lora_counts: the same for image-to-image. Empty: it takes no input image.
+                # inpaint_lora_counts: the same for inpainting (an input image with a mask). Empty: it takes no mask.
                 "checkpoints": [
                     {
                         "name": n,
                         "family": checkpoint_family(n),
                         "lora_counts": workflows.lora_counts(n) if workflows else [],
-                        "img2img_lora_counts": workflows.lora_counts(n, img2img=True) if workflows else [],
+                        "img2img_lora_counts": workflows.lora_counts(n, "img2img") if workflows else [],
+                        "inpaint_lora_counts": workflows.lora_counts(n, "inpaint") if workflows else [],
                     }
                     for n in checkpoints
                 ],

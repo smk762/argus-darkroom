@@ -66,6 +66,20 @@ class Expansion(BaseModel):
     system_prompt_sha256: Sha256
 
 
+class MaskRef(BaseModel):
+    """The identity of an inpainting mask, never its pixels. The mask selects the region of the input that is
+    repainted; it carries no imagery, so it is not scanned.
+
+    ``sha256`` is of the mask as ComfyUI got it: turned upright, cut into black and white at 128 and re-encoded as a
+    1-bit PNG with no metadata. ``source_sha256`` is of the bytes the caller sent.
+    """
+
+    sha256: Sha256
+    source_sha256: Sha256
+    # The share of the input's pixels that are repainted, before the template grows the mask's edge.
+    masked_fraction: float = Field(ge=0.0, le=1.0)
+
+
 class InitImageRef(BaseModel):
     """The identity of an image-to-image input, never its pixels: the caller keeps its own input.
 
@@ -79,6 +93,8 @@ class InitImageRef(BaseModel):
     height: int = Field(gt=0)
     source_sha256: Sha256
     denoise: float
+    # Inpainting: the mask, by its hashes. null for plain image-to-image.
+    mask: MaskRef | None = None
 
 
 class RequestRecord(BaseModel):

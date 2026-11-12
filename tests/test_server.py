@@ -13,6 +13,7 @@ import pytest
 from argus_cortex.moderation import policies as policy_table
 from fake_comfyui import FakeComfyUI, event, grey_png
 from fakes import FakeFaces, safe_answer, unsafe_answer
+from PIL import Image
 from rig import EXAMPLES, ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
@@ -122,7 +123,15 @@ def test_policies_with_the_flag(rig) -> None:
 def test_models(rig) -> None:
     assert client(rig).get("/models").json() == {
         # One workflow file (not a directory) serves every checkpoint, family or not.
-        "checkpoints": [{"name": "base.safetensors", "family": None, "lora_counts": [1], "img2img_lora_counts": []}],
+        "checkpoints": [
+            {
+                "name": "base.safetensors",
+                "family": None,
+                "lora_counts": [1],
+                "img2img_lora_counts": [],
+                "inpaint_lora_counts": [],
+            }
+        ],
         "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
@@ -131,6 +140,7 @@ def test_models(rig) -> None:
                 "name": "sdxl+lora1",
                 "family": None,
                 "loras": 1,
+                "mode": "txt2img",
                 "img2img": False,
                 "slots": [
                     "$base_checkpoint",
@@ -159,13 +169,15 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         path.write_bytes(name.encode())
     c = client(rig, workflow=EXAMPLES)
     body = c.get("/models").json()
-    assert [{k: v for k, v in c.items() if k != "img2img_lora_counts"} for c in body["checkpoints"]] == [
+    per_mode = ("img2img_lora_counts", "inpaint_lora_counts")
+    assert [{k: v for k, v in c.items() if k not in per_mode} for c in body["checkpoints"]] == [
         {"name": "base.safetensors", "family": None, "lora_counts": []},  # not in a family folder: cannot render
         {"name": "flux/f.safetensors", "family": "flux", "lora_counts": [0, 1, 2]},
         {"name": "illustrious/i.safetensors", "family": "illustrious", "lora_counts": []},
         {"name": "sdxl/a.safetensors", "family": "sdxl", "lora_counts": [0, 1, 2]},
     ]
     assert [c["img2img_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1]]
+    assert [c["inpaint_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1]]
     by_name = {w["name"]: w for w in body["workflows"]}
     assert set(by_name) == {
         "sdxl",
@@ -173,6 +185,8 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+lora2",
         "sdxl+img2img",
         "sdxl+lora1+img2img",
+        "sdxl+inpaint",
+        "sdxl+lora1+inpaint",
         "flux",
         "flux+lora1",
         "flux+lora2",
@@ -181,6 +195,12 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
     }
     assert by_name["flux"]["family"] == "flux" and "$guidance" in by_name["flux"]["slots"]
     assert "$negative" not in by_name["flux"]["slots"]
+    assert {n: (w["mode"], w["img2img"]) for n, w in by_name.items() if w["mode"] != "txt2img"} == {
+        "sdxl+img2img": ("img2img", True),
+        "sdxl+lora1+img2img": ("img2img", True),
+        "sdxl+inpaint": ("inpaint", False),
+        "sdxl+lora1+inpaint": ("inpaint", False),
+    }
     assert sorted(c.get("/health").json()["workflows"]) == sorted(by_name)
 
     r = c.post(
@@ -817,3 +837,59 @@ def test_an_input_with_no_image_to_image_template_is_a_400(rig) -> None:
     r = c.post("/generate/stream", json=BODY | {"init_image": {"data_base64": base64.b64encode(grey_png()).decode()}})
     assert r.status_code == 400 and "no image-to-image workflow" in r.json()["detail"]
     assert generate(c)["outcome"] == "passed"  # text-to-image is unaffected, and the lock was released
+
+
+# --- inpainting ----------------------------------------------------------------------------------------
+
+
+def black_and_white(size: int = 32, painted: bool = True) -> bytes:
+    image = Image.new("L", (size, size), 0)
+    if painted:
+        image.paste(255, (0, 0, size // 2, size))
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def inpaint_init(mask: bytes | None = None, size: int = 32) -> dict:
+    return {
+        "data_base64": base64.b64encode(grey_png(size)).decode(),
+        "mask_base64": base64.b64encode(mask if mask is not None else black_and_white(size)).decode(),
+        "denoise": 0.9,
+    }
+
+
+def test_an_inpaint_stream_scans_only_the_input_and_records_the_mask(rig) -> None:
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+inpaint.json")
+    events = stream_events(c, {"init_image": inpaint_init()})
+    assert [k for k, _ in events] == [
+        "preflight", "input_scan", "input_scan", "queued", "progress", "progress", "scan", "scan", "complete",
+    ]  # fmt: skip
+    record = events[-1][1]["record"]
+    assert record["outcome"] == "passed" and record["request"]["workflow"] == "sdxl+lora1+inpaint"
+    mask = record["request"]["init_image"]["mask"]
+    assert mask["masked_fraction"] == 0.5 and len(mask["sha256"]) == 64 and len(mask["source_sha256"]) == 64
+    assert c.get(f"/record/{record['id']}").json() == record
+
+
+@pytest.mark.parametrize(
+    ("mask", "detail"),
+    [
+        (black_and_white(16), "the mask is 16x16 but the init image is 32x32"),
+        (b"not a picture", "the mask cannot be decoded"),
+        (black_and_white(32, painted=False), "masks nothing"),
+    ],
+)
+def test_a_bad_mask_is_a_400_before_the_stream_opens(rig, mask, detail) -> None:
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+inpaint.json")
+    r = c.post("/generate/stream", json=BODY | {"init_image": inpaint_init(mask)})
+    assert r.status_code == 400 and detail in r.json()["detail"]
+    assert not c.app.state.busy.locked()
+    assert rig.singguard.requests == [] and rig.comfyui.calls == []
+
+
+def test_a_mask_with_no_inpaint_template_is_a_400(rig) -> None:
+    c = client(rig, workflow=EXAMPLES / "sdxl+lora1+img2img.json")
+    r = c.post("/generate/stream", json=BODY | {"init_image": inpaint_init()})
+    assert r.status_code == 400 and "no inpainting workflow" in r.json()["detail"]
+    assert not c.app.state.busy.locked()
