@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Image-to-image.** A request may carry `init_image` (`data_base64`: PNG, JPEG or WebP, at most 16 MiB and 4096 px
+  per edge; `denoise`: 0.05 to 1.0, default 0.5). The input gets the same checks as an output (SingGuard isolated and
+  with the prompt under every policy, NudeNet, the age estimate) after the text pre-flight and before anything reaches
+  ComfyUI, and goes on only if its outcome is `passed`. Anything else refuses the attempt (`refused`,
+  `outcome_reason` `input image: <reason>`, `critical` as for an output). The SSE stream carries one `input_scan`
+  event per input cell.
+- The input is never written to disk: it travels to ComfyUI as base64 inside the graph, read by a vendored custom node,
+  `comfyui/darkroom_load_image_base64.py` (`DarkroomLoadImageBase64`), and the graph is deleted from ComfyUI's history
+  after the run. Darkroom keeps only its hashes: `request.init_image` and `guard.input` in the record (new optional
+  fields; `record_version` stays 1.0).
+- Image-to-image templates, named `<family>[+lora<N>]+img2img.json`, with `$init_image` and `$denoise`. Examples
+  `sdxl+img2img` and `sdxl+lora1+img2img`. `/models` gives each checkpoint's `img2img_lora_counts` and each
+  workflow's `img2img` flag.
+
+### Changed
+
+- A template with a node that loads an image from ComfyUI's disk (`LoadImage` and the like) is refused at load: an
+  image reaches a run only as a checked input.
+
 ## [0.1.3] - 2026-11-09
 
 ### Added

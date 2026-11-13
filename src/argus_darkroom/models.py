@@ -66,6 +66,21 @@ class Expansion(BaseModel):
     system_prompt_sha256: Sha256
 
 
+class InitImageRef(BaseModel):
+    """The identity of an image-to-image input, never its pixels: the caller keeps its own input.
+
+    The hashes and size are of the image as darkroom judged it and sent it to ComfyUI: decoded, turned upright, made
+    RGB and re-encoded as a PNG with no metadata. ``source_sha256`` is of the bytes the caller sent.
+    """
+
+    sha256: Sha256
+    phash: str
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    source_sha256: Sha256
+    denoise: float
+
+
 class RequestRecord(BaseModel):
     """What was asked for. ``final_prompt`` is the exact string ComfyUI receives."""
 
@@ -87,6 +102,8 @@ class RequestRecord(BaseModel):
     workflow: str | None = None
     engine: Literal["comfyui"] = "comfyui"
     engine_version: str | None = None
+    # Image-to-image: the input's identity and the denoise it was rendered with. null for text-to-image.
+    init_image: InitImageRef | None = None
 
 
 class Cell(BaseModel):
@@ -130,6 +147,21 @@ class AgeRecord(BaseModel):
     minor_exposed: bool = False
 
 
+class InputScanRecord(BaseModel):
+    """The image-to-image input's own scan: the same checks an output gets, before anything reaches ComfyUI.
+
+    The input goes on only when ``outcome`` is ``passed``; anything else refuses the attempt. ``outcome`` and
+    ``reason`` are what the outcome table said of the input, as if it were an output.
+    """
+
+    scans: dict[str, ScanCells] = Field(default_factory=dict)
+    nudenet: NudeNetRecord
+    # null when the age check is unavailable
+    age: AgeRecord | None = None
+    outcome: Outcome
+    reason: str | None = None
+
+
 class GuardRecord(BaseModel):
     enforcing_policy: str
     advisory_policies: list[str] = Field(default_factory=list)
@@ -140,6 +172,9 @@ class GuardRecord(BaseModel):
     nudenet: NudeNetRecord | None = None
     # null when the age check is unavailable
     age: AgeRecord | None = None
+    # The image-to-image input's scan. null for text-to-image, and when pre-flight refused before the input was
+    # scanned.
+    input: InputScanRecord | None = None
 
 
 class ImageRecord(BaseModel):
@@ -159,7 +194,8 @@ class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     darkroom_version: str
     outcome: Outcome
-    # Rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error.
+    # Rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error. A refusal of
+    # an image-to-image input is "input image: " and the input's own reason.
     outcome_reason: str | None = None
     # True for illegal and minor-exposed deletions; false for everything else. Lets non-critical
     # records be pruned first when retention is decided.
