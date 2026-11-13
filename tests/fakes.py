@@ -87,11 +87,12 @@ class FakeNudeNet:
         self.labels = labels or {}
         self.status = status
         self.calls = 0
+        self.bodies: list[bytes] = []  # every request body, as sent
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
-                self.rfile.read(int(self.headers["Content-Length"]))
+                fake.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.calls += 1
                 detections = [{"class": c, "score": s, "box": [0, 0, 10, 10]} for c, s in fake.labels.items()]
                 data = json.dumps({"success": True, "prediction": [detections]}).encode()

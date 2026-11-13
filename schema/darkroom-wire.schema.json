@@ -404,6 +404,17 @@
           "title": "Height",
           "type": "integer"
         },
+        "mask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaskRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "phash": {
           "title": "Phash",
           "type": "string"
@@ -523,6 +534,36 @@
         "sha256"
       ],
       "title": "LoRARef",
+      "type": "object"
+    },
+    "MaskRef": {
+      "description": "The identity of an inpainting mask, never its pixels. The mask selects the region of the input that is\nrepainted; it carries no imagery, so it is not scanned.\n\n``sha256`` is of the mask as ComfyUI got it: turned upright, cut into black and white at 128 and re-encoded as a\n1-bit PNG with no metadata. ``source_sha256`` is of the bytes the caller sent.",
+      "properties": {
+        "masked_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Masked Fraction",
+          "type": "number"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "source_sha256",
+        "masked_fraction"
+      ],
+      "title": "MaskRef",
       "type": "object"
     },
     "ModelRef": {

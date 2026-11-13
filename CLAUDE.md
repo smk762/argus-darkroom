@@ -26,6 +26,11 @@ not be broken and where things are.
   omitted, deleted, unchecked) refuses. The input is never written to disk: it travels as base64 inside the graph to
   `DarkroomLoadImageBase64` (`comfyui/`), the history delete removes it, and the record keeps only its hashes. No
   template may load an image any other way.
+- **An inpainting mask is never scanned and never written.** It is a region selector with no imagery: the input it
+  selects from gets its full pre-flight as above, and the output is judged as usual, so the mask is sent to no guard.
+  It is checked as a file only (decodes, the upright input's exact size, something masked; a 400 otherwise), travels as
+  base64 in the graph to `DarkroomLoadMaskBase64`, and the record keeps only its hashes and `masked_fraction`. Only an
+  `+inpaint` template may hold the mask loader, and a mask never falls back to an image-to-image template.
 
 ## Argus suite
 <!-- argus-suite: keep this block; argus-ci checks for it -->
@@ -46,9 +51,9 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 | `preflight.py`, `scan.py`, `guard.py` | the text check, the image scans, and the SingGuard wrapper that turns failures into `unchecked` |
 | `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
-| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and `+img2img`), model sha256s |
-| `images.py` | an image's hashes (`describe`), and `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent |
-| `comfyui/` | not in the package: `DarkroomLoadImageBase64`, the ComfyUI custom node image-to-image needs (base64 in, `IMAGE` out, no disk) |
+| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and mode: `+img2img`, `+inpaint`), model sha256s |
+| `images.py` | an image's hashes (`describe`), `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent, and `load_mask`: the inpainting mask, checked against the input's size and cut into a 1-bit PNG |
+| `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk) |
 | `age.py` | curator over `AGE_URL` (`POST /faces?body=true`), or in-process `detect_faces` behind the `[age]` extra |
 | `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
