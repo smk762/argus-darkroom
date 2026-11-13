@@ -98,6 +98,10 @@ def _decode_upright(data_base64: str, what: str) -> tuple[Image.Image, str]:
             img.load()
             upright = ImageOps.exif_transpose(img)
             upright.load()
+            if upright.mode.startswith("I"):
+                # A 16-bit greyscale PNG: Pillow's conversions to L or RGB clip instead of scaling, which would make
+                # every grey above 255 of 65535 white. Scale it down to 8 bits first.
+                upright = upright.convert("I").point(lambda v: v * (1 / 256)).convert("L")
     except UnreadableImage:
         raise
     except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
@@ -163,11 +167,11 @@ def load_mask(data_base64: str, size: tuple[int, int]) -> InputMask:
         grey = upright.convert("L")
     except (OSError, ValueError) as exc:
         raise UnreadableImage(f"the mask cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
-    binary = grey.point(lambda v: 255 if v >= MASK_THRESHOLD else 0).convert("1", dither=Image.Dither.NONE)
-    histogram = binary.convert("L").histogram()
-    masked = histogram[255]
+    cut = grey.point(lambda v: 255 if v >= MASK_THRESHOLD else 0)
+    masked = cut.histogram()[255]
     if masked == 0:
         raise UnreadableImage("the mask masks nothing: paint the region to repaint white")
+    binary = cut.convert("1", dither=Image.Dither.NONE)
     buf = io.BytesIO()
     binary.save(buf, "PNG")
     png = buf.getvalue()
@@ -177,5 +181,6 @@ def load_mask(data_base64: str, size: tuple[int, int]) -> InputMask:
         source_sha256=source_sha256,
         width=binary.width,
         height=binary.height,
-        masked_fraction=round(masked / (binary.width * binary.height), 4),
+        # Never 0 once something is masked: a few pixels of a large mask would otherwise round to "masks nothing".
+        masked_fraction=max(round(masked / (binary.width * binary.height), 4), 0.0001),
     )

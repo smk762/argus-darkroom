@@ -138,8 +138,8 @@ exactly the input's.
 
 - **A directory** holds one template per checkpoint family, LoRA count and mode, named `<family>.json` (no LoRA slots)
   or `<family>+lora<N>.json` (exactly N), with `+img2img` at the end for an image-to-image template
-  (`sdxl+lora1+img2img.json`) or `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`). A checkpoint's family is its top-level folder under `checkpoints/`, so
-  `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
+  (`sdxl+lora1+img2img.json`) or `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`). A checkpoint's
+  family is its top-level folder under `checkpoints/`, so `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
   checkpoint outside a family folder, an input image with no `+img2img` template or a mask with no `+inpaint` one, the
   request is a 400. Darkroom never falls back to another family's template, LoRA count or mode. A misnamed or broken
   file, or one whose name and `$init_image` / `$init_mask` slots disagree, stops the server from starting.

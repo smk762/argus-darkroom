@@ -227,6 +227,21 @@ def test_the_mask_is_turned_upright_like_the_image() -> None:
         load_mask(b64(mask_png(size=(32, 48))), SIZE)
 
 
+def test_a_sixteen_bit_mask_is_scaled_not_clipped() -> None:
+    # Pillow clips I;16 to 8 bits: a dark grey (1000 of 65535) would turn white and repaint everything.
+    deep = Image.new("I;16", SIZE, 1000)
+    deep.paste(65535, (0, 0, 24, 16))
+    buf = io.BytesIO()
+    deep.save(buf, "PNG")
+    mask = load_mask(b64(buf.getvalue()), SIZE)
+    assert mask.png == MASK_CANONICAL and mask.masked_fraction == 0.25
+
+
+def test_a_few_masked_pixels_never_record_as_nothing() -> None:
+    big = (4096, 4096)
+    assert load_mask(b64(mask_png(size=big, box=(0, 0, 1, 1))), big).masked_fraction == 0.0001
+
+
 def test_a_full_mask_is_allowed() -> None:
     assert load_mask(b64(mask_png(box=(0, 0, *SIZE))), SIZE).masked_fraction == 1.0
 
