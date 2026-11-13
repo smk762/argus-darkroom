@@ -11,6 +11,7 @@ import binascii
 import hashlib
 import io
 from dataclasses import dataclass
+from functools import cached_property
 
 import imagehash
 from PIL import Image, ImageOps
@@ -69,7 +70,7 @@ class InputImage:
     def __repr__(self) -> str:  # never the pixels, in a log or a traceback
         return f"InputImage(sha256={self.record.sha256}, {self.record.width}x{self.record.height})"
 
-    @property
+    @cached_property  # encoded once: it fills the graph both when the request is prepared and when it is rendered
     def base64(self) -> str:
         return base64.b64encode(self.png).decode("ascii")
 
@@ -100,7 +101,7 @@ def load_input(data_base64: str) -> InputImage:
             rgb = upright.convert("RGB")
     except UnreadableImage:
         raise
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+    except Exception as exc:  # a malformed header or EXIF block can raise anything (struct.error, KeyError, ...)
         raise UnreadableImage(f"the init image cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     buf = io.BytesIO()
     rgb.save(buf, "PNG")

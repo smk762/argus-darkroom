@@ -71,9 +71,15 @@ def writes_to_disk(class_type: str) -> bool:
     return any(word in lowered for word in _WRITING_WORDS)
 
 
+# A node whose class name says it loads an image, a latent or video frames from ComfyUI's disk (LoadImage,
+# LoadImageMask, LoadLatent, LoadVideo, VHS_LoadVideo, ...) brings in pixels darkroom never checked.
+_LOADING_WORDS = ("loadimage", "loadlatent", "loadvideo")
+
+
 def loads_unchecked_image(class_type: str) -> bool:
     """Whether *class_type* is, or by its name looks like, a node that loads an image darkroom did not check."""
-    return class_type != LOADER_NODE and "loadimage" in class_type.casefold().replace("_", "")
+    lowered = class_type.casefold().replace("_", "")
+    return class_type != LOADER_NODE and any(word in lowered for word in _LOADING_WORDS)
 
 
 @dataclass(frozen=True)
