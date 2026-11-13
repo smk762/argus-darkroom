@@ -67,8 +67,8 @@ make install && make test && make lint
 uv run --no-sync argus-darkroom schema --check   # after any change to models.py: run `schema`, commit the file
 ```
 
-- `main` is releases, `dev` is work. Work in a worktree from `dev`, and open PRs into `dev`. CI runs on `main` only, so
-  run lint, tests and `schema --check` locally before every PR.
+- Work in a worktree from `origin/dev` and open PRs into `dev` (see Branches below). Run lint, tests and
+  `schema --check` locally before every PR; CI runs them again on the PR.
 - Use `docker compose`, not `docker-compose`.
 - The record is a wire contract (`record_version`). Adding a field is fine; renaming or removing one is a new version.
   The blur decision lives only in `guard.nudenet.blur`, which is recorded for every NSFW-policy image (`exposed_score`
@@ -80,3 +80,11 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
   them to mocking.
 - `scripts/preflight_eval.py` is run by hand against a real SingGuard that supports text-only checks (agent-composer
   PR #4). It is not a test.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date
+by merging `origin/dev`, never `main`. Never open a PR against `main` or push work to it directly: `main` must never be
+ahead of `dev`. A release fast-forwards `main` to a `dev` commit that passed CI (`git push origin origin/dev:main`),
+then tags it. If `main` is protected and needs a PR, merge the release PR, then immediately merge `main` back into `dev`
+so the merge commit is not left on `main` alone.
