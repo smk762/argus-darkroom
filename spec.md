@@ -267,7 +267,7 @@ Deferred until before a public launch:
 7. **Schema, README, CLAUDE.md, compose.** Compose runs darkroom and safelight; ComfyUI, Ollama, SingGuard and NudeNet are reached by URL.
 8. **Later, in their own PRs:** lift the ComfyUI transport and the generation models into cortex, and move atlas and proof onto them.
 
-Repo conventions from day one: `main` for releases, `dev` for work, PRs into `dev` (`.cursor/rules/git-workflow.mdc`). CI runs on main only, so lint, tests and `schema --check` run locally before every PR into `dev`. Versions come from git tags (`hatch-vcs`).
+Repo conventions from day one: `main` for releases, `dev` for work, PRs into `dev` (`.cursor/rules/git-workflow.mdc`). Lint, tests and `schema --check` run locally before every PR into `dev`, and CI runs them on every push and PR to `dev` and `main`. Versions come from git tags (`hatch-vcs`).
 
 ## Done when
 
