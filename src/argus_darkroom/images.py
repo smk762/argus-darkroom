@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import io
 from dataclasses import dataclass
+from functools import cached_property
 
 import imagehash
 from PIL import Image, ImageOps
@@ -70,7 +71,7 @@ class InputImage:
     def __repr__(self) -> str:  # never the pixels, in a log or a traceback
         return f"InputImage(sha256={self.record.sha256}, {self.record.width}x{self.record.height})"
 
-    @property
+    @cached_property  # encoded once: it fills the graph both when the request is prepared and when it is rendered
     def base64(self) -> str:
         return base64.b64encode(self.png).decode("ascii")
 
@@ -104,7 +105,7 @@ def _decode_upright(data_base64: str, what: str) -> tuple[Image.Image, str]:
                 upright = upright.convert("I").point(lambda v: v * (1 / 256)).convert("L")
     except UnreadableImage:
         raise
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as exc:
+    except Exception as exc:  # a malformed header or EXIF block can raise anything (struct.error, KeyError, ...)
         raise UnreadableImage(f"{what} cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     return upright, hashlib.sha256(data).hexdigest()
 
@@ -116,7 +117,7 @@ def load_input(data_base64: str) -> InputImage:
     upright, source_sha256 = _decode_upright(data_base64, "the init image")
     try:
         rgb = upright.convert("RGB")
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         raise UnreadableImage(f"the init image cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     buf = io.BytesIO()
     rgb.save(buf, "PNG")
@@ -165,7 +166,7 @@ def load_mask(data_base64: str, size: tuple[int, int]) -> InputMask:
         )
     try:
         grey = upright.convert("L")
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         raise UnreadableImage(f"the mask cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     cut = grey.point(lambda v: 255 if v >= MASK_THRESHOLD else 0)
     masked = cut.histogram()[255]

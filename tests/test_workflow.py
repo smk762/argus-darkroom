@@ -455,7 +455,17 @@ def test_a_denoise_slot_without_an_input_is_refused() -> None:
 
 
 @pytest.mark.parametrize(
-    "class_type", ["LoadImage", "LoadImageMask", "LoadImageOutput", "VHS_LoadImages", "Load_Image"]
+    "class_type",
+    [
+        "LoadImage",
+        "LoadImageMask",
+        "LoadImageOutput",
+        "VHS_LoadImages",
+        "Load_Image",
+        "LoadLatent",
+        "LoadVideo",
+        "VHS_LoadVideo",
+    ],
 )
 def test_a_node_that_loads_an_unchecked_image_is_refused_at_load(class_type) -> None:
     with pytest.raises(WorkflowError, match="loads an image darkroom never checked"):
