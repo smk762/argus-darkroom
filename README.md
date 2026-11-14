@@ -200,15 +200,34 @@ warns on non-illegal flags and blurs exposed output, and illegal content is refu
 
 ```bash
 argus-darkroom preflight "a cat on a sofa" -n "blurry"
-argus-darkroom generate "a cat on a sofa" --checkpoint base.safetensors \
+argus-darkroom generate "a cat on a sofa" --checkpoint sdxl/base.safetensors \
     --sampler euler --scheduler normal --steps 20 --cfg 5 --width 1024 --height 1024 \
     --lora style.safetensors:0.8 --trigger sks --expand
+argus-darkroom generate "a lighthouse at dusk" --checkpoint flux/flux1-dev-fp8.safetensors \
+    --sampler euler --scheduler simple --steps 20 --cfg 1 --guidance 3.5 --width 1024 --height 1024
 argus-darkroom serve
 argus-darkroom schema --check
+argus-darkroom version
 ```
 
-`generate` exits `0` for a released image (`passed` or `review`), `2` for anything else, and `1` for a usage or
-configuration error. Sampling options are required: darkroom does not invent them.
+| Command | Options |
+|---|---|
+| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--json` (print the whole record instead of a summary) |
+| `preflight PROMPT` | The text check alone: `--negative`/`-n`, `--policy`, `--advisory`, `--thinking`, `--trigger-word` (repeatable). Prints the verdicts as JSON |
+| `serve` | `--port`/`-p` (default 8106), `--host` (default `127.0.0.1`), `--output-root`, `--allow-nsfw`, `--cors-origin` (repeatable). Each overrides its `ARGUS_DARKROOM_*` variable |
+| `schema` | Writes `schema/darkroom-wire.schema.json`, or `--output`/`-o` somewhere else. `--check` exits 1 when the committed file is stale |
+| `version` | Prints the version |
+
+The CLI renders text-to-image only. Image-to-image and inpainting (`init_image`, `mask`) are reached over HTTP.
+
+Exit codes for `generate` and `preflight`:
+
+- **`0`:** `generate` released the image (`passed` or `review`), or `preflight`'s verdict was not `refused`.
+- **`2`:** anything else (refused, deleted, omitted or failed), **and** a missing or malformed option, which the
+  argument parser rejects with the same code. A script that needs to tell these apart should pass `--json` and read
+  `outcome`, or look for `Usage:` on stderr.
+- **`1`:** a configuration error, such as no `SINGGUARD_URL` or a workflow that cannot load, or a request darkroom
+  refuses before running it, such as an unknown policy or a checkpoint with no workflow.
 
 `--expand` has Ollama rewrite the prompt. The expansion replaces your text (trigger words are appended) and is checked
 like anything else, so it cannot route around the gate. If Ollama fails, the attempt is a `failed` record, never a
@@ -219,8 +238,8 @@ silent fall back to the unexpanded prompt.
 | | |
 |---|---|
 | `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `workflows` (names) |
-| `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
-| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs as `{name}`, `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
+| `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
+| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
 | `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
