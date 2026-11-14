@@ -1,4 +1,9 @@
-# argus-darkroom
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/darkroom/argus-darkroom-lockup-dark.svg">
+    <img alt="argus-darkroom" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/darkroom/argus-darkroom-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 Guarded image generation for the Argus suite. A prompt is checked before anything is generated. Each output is checked
 twice, once on its own and once alongside the prompt that made it, and only then released or destroyed. A record is kept
