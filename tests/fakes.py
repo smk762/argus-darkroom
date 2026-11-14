@@ -85,6 +85,7 @@ class FakeNudeNet:
 
     def __init__(self, labels: dict[str, float] | None = None, status: int = 200) -> None:
         self.labels = labels or {}
+        self.box = [0, 0, 10, 10]  # every detection's [x, y, w, h]
         self.status = status
         self.calls = 0
         self.bodies: list[bytes] = []  # every request body, as sent
@@ -94,7 +95,7 @@ class FakeNudeNet:
             def do_POST(self) -> None:
                 fake.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.calls += 1
-                detections = [{"class": c, "score": s, "box": [0, 0, 10, 10]} for c, s in fake.labels.items()]
+                detections = [{"class": c, "score": s, "box": fake.box} for c, s in fake.labels.items()]
                 data = json.dumps({"success": True, "prediction": [detections]}).encode()
                 self.send_response(fake.status)
                 self.send_header("Content-Type", "application/json")

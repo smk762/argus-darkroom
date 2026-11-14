@@ -20,9 +20,9 @@ from dataclasses import dataclass
 import structlog
 from argus_cortex.moderation import CheckFailed, NsfwResult, NudeNetClient
 
-from argus_darkroom.age import AgeEstimator
+from argus_darkroom.age import AgeEstimator, read_ages
 from argus_darkroom.guard import Guard
-from argus_darkroom.models import Cell, FaceAge, ScanCells
+from argus_darkroom.models import AgeRecord, Cell, ScanCells
 
 logger = structlog.get_logger()
 
@@ -33,7 +33,7 @@ OnCell = Callable[[str, str, Cell], None]  # (policy, "isolated" | "with_prompt"
 class Scan:
     scans: dict[str, ScanCells]
     nsfw: NsfwResult | None  # None: NudeNet is not configured, or did not answer
-    faces: list[FaceAge] | None  # None: the age check is unavailable, or failed for this image
+    age: AgeRecord | None  # None: the age check is unavailable, or failed for this image
 
 
 class Scanner:
@@ -59,7 +59,7 @@ class Scanner:
             if on_cell:
                 on_cell(policy, "with_prompt", with_prompt)
             scans[policy] = ScanCells(isolated=isolated, with_prompt=with_prompt)
-        return Scan(scans=scans, nsfw=self._nudenet(data), faces=self._ages(data))
+        return Scan(scans=scans, nsfw=self._nudenet(data), age=self._ages(data))
 
     def _nudenet(self, data: bytes) -> NsfwResult | None:
         if self.nudenet is None:
@@ -72,11 +72,11 @@ class Scanner:
             logger.exception("nudenet.unexpected_error")
         return None
 
-    def _ages(self, data: bytes) -> list[FaceAge] | None:
+    def _ages(self, data: bytes) -> AgeRecord | None:
         if self.age is None:
             return None
         try:
-            return self.age.estimate(data)
+            return read_ages(self.age, data)
         except Exception as exc:
             # Includes AgeUnavailable. The minors rule then rests on SingGuard alone, as when the check is off.
             logger.warning("age.failed", error=str(exc))

@@ -183,6 +183,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `COMFYUI_URL` | `http://localhost:8188` | |
 | `NUDENET_URL` | | Empty: SFW generation unavailable. |
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra, or no age check. |
+| `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
@@ -242,7 +243,7 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `workflows` (names) |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `minor_exposed` (the rule), `workflows` (names) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
@@ -323,9 +324,24 @@ The age check is an extra signal on top of SingGuard's minors rule, never a repl
 image for itself, with or without an estimate: rule A of each adult policy covers anyone who appears to be a minor. So
 when the age check is missing, that rule still applies.
 
-The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own: an estimate under 18
-on an image where NudeNet scores an exposed class at 0.2 or more deletes the image (`minor-exposed`). Without exposure
-it is only recorded and shown.
+The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own, the `minor-exposed`
+rule, which deletes the image. Without exposure an estimate is only recorded and shown. `MINOR_EXPOSED` picks how the
+rule places exposure:
+
+- `frame` (the default): any estimate under 18 on an image where NudeNet scores an exposed class at 0.2 or more. Where
+  the exposure is does not matter, so an adult's exposure beside a clothed minor deletes too.
+- `overlap`: argus-curator's original rule. Each exposed NudeNet detection (the five default exposed classes, scored
+  0.2 or more) is placed by its box against the person boxes, or the face boxes when no person was detected. It
+  deletes when it overlaps a box estimated under 18, or overlaps no box at all; one overlapping only adults' boxes does
+  not. It fails closed: a face under 18 whose body was not found makes any exposure count, and so does an exposed score
+  with no exposed detection box to place.
+
+Both ignore the user's NudeNet threshold. The record's `age.minor_exposed_rule` says which rule decided, and
+`age.people` keeps every person box with the face it was matched to (`face_index`), and `nudenet.detections` keeps
+NudeNet's boxes (label, score, box; never pixels), so an `overlap` decision can be recomputed from the record. A
+matched person that cannot be placed (a malformed box, an unknown face) is dropped from `people`, which under
+`overlap` fails closed. `/health` reports the rule as `minor_exposed`.
+A record written before the setting existed has none of these fields and was decided by `frame`.
 
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,

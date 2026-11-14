@@ -41,6 +41,7 @@ from argus_darkroom.models import (
     LoRARef,
     MaskRef,
     ModelRef,
+    NudeNetBox,
     NudeNetRecord,
     RequestRecord,
 )
@@ -428,13 +429,17 @@ class Engine:
     ) -> tuple[Decision, AgeRecord | None, NudeNetRecord]:
         """The outcome table over one image's scan: the same for an input image as for an output."""
         exposed = scan.nsfw.exposed_score if scan.nsfw is not None else None
-        age = AgeRecord(faces=scan.faces) if scan.faces is not None else None
+        detections = scan.nsfw.detections if scan.nsfw is not None else []
+        rule = self.settings.minor_exposed
+        age = scan.age.model_copy(deep=True) if scan.age is not None else None
         if age is not None:
-            age.minor_exposed = minor_exposed(age, exposed)
-        decision = decide(enforcing, scan.scans, exposed, age, request.nsfw_threshold)
+            age.minor_exposed_rule = rule
+            age.minor_exposed = minor_exposed(age, exposed, detections, rule)
+        decision = decide(enforcing, scan.scans, exposed, age, request.nsfw_threshold, detections, rule)
         nudenet = NudeNetRecord(
             exposed_score=exposed,
             labels=scan.nsfw.labels if scan.nsfw is not None else {},
+            detections=[NudeNetBox(label=d.label, score=d.score, bbox=tuple(d.bbox)) for d in detections],
             threshold=request.nsfw_threshold,
             blur=decision.blur,
         )

@@ -28,6 +28,8 @@ Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", description="lowercase 
 Outcome = Literal["refused", "passed", "review", "deleted", "omitted", "failed"]
 Mode = Literal["sfw", "nsfw"]
 CellState = Literal["safe", "flagged", "illegal", "unchecked"]
+# How the minor-exposed rule places exposure: anywhere in the frame, or by box overlap (ARGUS_DARKROOM_MINOR_EXPOSED).
+MinorExposedRule = Literal["frame", "overlap"]
 
 _Versioned = make_versioned_base(
     "record_version", RECORD_VERSION, SUPPORTED_RECORD_MAJORS, label="record_version", class_name="_Versioned"
@@ -137,12 +139,23 @@ class ScanCells(BaseModel):
     with_prompt: Cell
 
 
+class NudeNetBox(BaseModel):
+    """One NudeNet detection: a class, its score and where it is. A box, never pixels."""
+
+    label: str
+    score: float
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels
+
+
 class NudeNetRecord(BaseModel):
     """What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not
     configured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it."""
 
     exposed_score: float | None
     labels: dict[str, float] = Field(default_factory=dict)
+    # Every detection NudeNet reported (all score >= 0.2), so an ``overlap`` minor-exposed decision can be recomputed
+    # from the record. Empty when it did not answer, and in records from before boxes were kept.
+    detections: list[NudeNetBox] = Field(default_factory=list)
     # The user's ``nsfw_threshold`` (blur). The SFW gate is a fixed 0.2 and ignores it.
     threshold: float
     # Whether safelight blurs the image until the user reveals it. True under an NSFW policy when NudeNet scores it at
@@ -157,10 +170,28 @@ class FaceAge(BaseModel):
     bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
 
 
+class PersonAge(BaseModel):
+    """One person (body) box from curator's person detector, with its MiVOLO estimate when it has one.
+
+    ``face_index`` is the face in :attr:`AgeRecord.faces` this person was matched to, or ``None`` for a body with
+    no face. A matched person's estimate may be ``None``: the face carries it. An unmatched person's estimate is
+    also in :attr:`AgeRecord.faces`, so ``faces`` alone still holds every estimate.
+    """
+
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
+    age_estimate_years: float | None = None
+    face_index: int | None = None
+
+
 class AgeRecord(BaseModel):
     source: Literal["mivolo"] = "mivolo"
+    # Every estimate: each face, then each person with no face (a faceless minor is still a minor).
     faces: list[FaceAge] = Field(default_factory=list)
+    # Every person box, matched or not. Empty when the estimator found none or does not report them.
+    people: list[PersonAge] = Field(default_factory=list)
     minor_exposed: bool = False
+    # Which rule decided minor_exposed. Records from before the setting existed used "frame".
+    minor_exposed_rule: MinorExposedRule = "frame"
 
 
 class InputScanRecord(BaseModel):

@@ -174,6 +174,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             # the age check can run; `age_unavailable` says why not.
             "backends": {**up, "age": age.available},
             "age_unavailable": age.reason,
+            # How the minor-exposed rule places exposure: "frame" or "overlap" (ARGUS_DARKROOM_MINOR_EXPOSED).
+            "minor_exposed": cfg.minor_exposed,
             "policies": list(policy_table.POLICIES),
             "default_policy": cfg.policy,
             "thinking": cfg.thinking,

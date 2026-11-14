@@ -20,7 +20,7 @@ from typing import Protocol
 
 import structlog
 
-from argus_darkroom.models import FaceAge
+from argus_darkroom.models import AgeRecord, FaceAge, PersonAge
 
 logger = structlog.get_logger()
 
@@ -37,6 +37,23 @@ class AgeEstimator(Protocol):
     def estimate(self, data: bytes) -> list[FaceAge]:
         """One estimate per detected face (none when there is no face). Raises :class:`AgeUnavailable`."""
         ...
+
+
+class PeopleAgeEstimator(AgeEstimator, Protocol):
+    def read(self, data: bytes) -> AgeRecord:
+        """:meth:`estimate`'s faces, plus every person box and its face link (for the overlap rule)."""
+        ...
+
+
+def read_ages(estimator: AgeEstimator, data: bytes) -> AgeRecord:
+    """The estimator's whole reading: :meth:`PeopleAgeEstimator.read` when it has one, else its faces alone.
+
+    An estimator without person boxes still works under the overlap rule, which then places exposure by face box.
+    """
+    read = getattr(estimator, "read", None)
+    if callable(read):
+        return read(data)
+    return AgeRecord(faces=estimator.estimate(data))
 
 
 @dataclass(frozen=True)
@@ -87,6 +104,9 @@ class HttpAgeEstimator:
         self.timeout = timeout
 
     def estimate(self, data: bytes) -> list[FaceAge]:
+        return self.read(data).faces
+
+    def read(self, data: bytes) -> AgeRecord:
         req = urllib.request.Request(
             self.url,
             data=data,
@@ -104,37 +124,66 @@ class HttpAgeEstimator:
             raise AgeUnavailable(f"age check returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
             raise AgeUnavailable(f"age check failed: {exc}") from exc
-        return _faces_from_payload(payload)
+        return _reading_from_payload(payload)
+
+
+def _years(value: object) -> float | None:
+    """An estimate, or ``None``. bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and
+    NaN < 18 is False, so accepting one would let the minors rule silently not fire."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return None
+    return float(value)
+
+
+def _box(bbox: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return None
+    try:
+        box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+    except (TypeError, ValueError):
+        return None
+    return box if all(math.isfinite(v) for v in box) else None
 
 
 def _face_from_item(item: object, kind: str) -> FaceAge:
     if not isinstance(item, dict):
         raise AgeUnavailable(f"age check returned a malformed {kind}")
-    years = item.get("age_estimate_years")
+    years = _years(item.get("age_estimate_years"))
     bbox = item.get("bbox")
-    # bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and NaN < 18 is False, so
-    # accepting one would let the minors rule silently not fire.
-    if isinstance(years, bool) or not isinstance(years, (int, float)) or not math.isfinite(years) or years < 0:
-        raise AgeUnavailable(f"age check returned a {kind} without an estimate")
-    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+    if years is None or not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
         raise AgeUnavailable(f"age check returned a {kind} without an estimate")
     try:
         box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
     except (TypeError, ValueError) as exc:
         raise AgeUnavailable("age check returned a malformed bbox") from exc
-    return FaceAge(age_estimate_years=float(years), bbox=box)
+    return FaceAge(age_estimate_years=years, bbox=box)
 
 
-def _faces_from_payload(payload: object) -> list[FaceAge]:
-    """Faces, plus unmatched people that still have an estimate.
+def _matched_person(bbox: object, years: object, face_index: object, n_faces: int) -> PersonAge | None:
+    """A person matched to a face, for the overlap rule, or ``None`` when it cannot be placed.
+
+    Dropping one fails closed under ``overlap``: its face then has no person box (any exposure counts), and an
+    exposure on its body overlaps no box (it counts too). ``frame`` never reads people.
+    """
+    box = _box(bbox)
+    if box is None or isinstance(face_index, bool) or not isinstance(face_index, int):
+        return None
+    if not 0 <= face_index < n_faces:
+        return None
+    return PersonAge(bbox=box, age_estimate_years=_years(years), face_index=face_index)
+
+
+def _reading_from_payload(payload: object) -> AgeRecord:
+    """Faces, plus unmatched people that still have an estimate, and every person box.
 
     Curator 0.10 ``POST /faces?body=true`` returns body-only ages in ``people``.
     Those must feed ``minor_exposed``: a faceless minor is still a minor.
     ``people_check`` other than ``ok`` means an empty list is not "none found".
-    Matched people duplicate a face and are skipped. An unmatched person with no
-    estimate makes the whole check unavailable, as a face with none does: that
-    person could be a minor, and skipping them would let ``minor_exposed`` pass
-    on evidence it never had.
+    A matched person duplicates a face, so it adds no estimate to ``faces``; it is
+    kept in ``people`` with its ``face_index`` for the overlap rule. An unmatched
+    person with no estimate makes the whole check unavailable, as a face with none
+    does: that person could be a minor, and skipping them would let
+    ``minor_exposed`` pass on evidence it never had.
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("faces"), list):
         raise AgeUnavailable("age check returned no faces list")
@@ -147,18 +196,25 @@ def _faces_from_payload(payload: object) -> list[FaceAge]:
     if check is not None and check != "ok":
         raise AgeUnavailable(f"people check {check!r}")
     faces = [_face_from_item(item, "face") for item in payload["faces"]]
+    n_faces = len(faces)
     people = payload.get("people")
     if people is None:
-        return faces
+        return AgeRecord(faces=faces)
     if not isinstance(people, list):
         raise AgeUnavailable("age check returned a malformed people list")
+    boxes: list[PersonAge] = []
     for item in people:
         if not isinstance(item, dict):
             raise AgeUnavailable("age check returned a malformed person")
         if item.get("face_index") is not None:
+            matched = _matched_person(item.get("bbox"), item.get("age_estimate_years"), item["face_index"], n_faces)
+            if matched is not None:
+                boxes.append(matched)
             continue
-        faces.append(_face_from_item(item, "person"))
-    return faces
+        person = _face_from_item(item, "person")
+        faces.append(person)
+        boxes.append(PersonAge(bbox=person.bbox, age_estimate_years=person.age_estimate_years))
+    return AgeRecord(faces=faces, people=boxes)
 
 
 class CuratorAgeEstimator:
@@ -179,6 +235,9 @@ class CuratorAgeEstimator:
         self._result = ImageResult
 
     def estimate(self, data: bytes) -> list[FaceAge]:
+        return self.read(data).faces
+
+    def read(self, data: bytes) -> AgeRecord:
         result = self._result(rel_path="image", abs_path="", passed=True)
         try:
             # strict: a failed detector must not read as "no faces" (empty list, a pass).
@@ -201,8 +260,17 @@ class CuratorAgeEstimator:
                 raise AgeUnavailable("MiVOLO gave no age for a detected face")
             x, y, w, h = face.bbox
             faces.append(FaceAge(age_estimate_years=float(years), bbox=(x, y, w, h)))
+        n_faces = len(faces)  # face_index points into the detected faces, not the faceless people appended below
+        people: list[PersonAge] = []
         for person in getattr(result, "people", None) or []:
-            if getattr(person, "face_index", None) is not None:
+            face_index = getattr(person, "face_index", None)
+            if face_index is not None:
+                body_years = getattr(person, "age_years", None)
+                if getattr(person, "age_source", None) not in (None, "mivolo"):
+                    body_years = None
+                matched = _matched_person(person.bbox, body_years, face_index, n_faces)
+                if matched is not None:
+                    people.append(matched)
                 continue
             body_years = getattr(person, "age_years", None)
             if getattr(person, "age_source", None) not in (None, "mivolo"):
@@ -212,7 +280,8 @@ class CuratorAgeEstimator:
                 raise AgeUnavailable("MiVOLO gave no age for a detected person")
             x, y, w, h = person.bbox
             faces.append(FaceAge(age_estimate_years=float(body_years), bbox=(x, y, w, h)))
-        return faces
+            people.append(PersonAge(bbox=(x, y, w, h), age_estimate_years=float(body_years)))
+        return AgeRecord(faces=faces, people=people)
 
 
 def age_status() -> AgeStatus:

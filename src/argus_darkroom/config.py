@@ -10,10 +10,16 @@ from argus_cortex.moderation import THINKING_MODES
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import env_flag
 
+from argus_darkroom.models import MinorExposedRule
+
 PREFIX = "ARGUS_DARKROOM_"
 # Safelight's origins, published (3000) and `make dev` (3097): read from them by default, and the only ones trusted to
 # write unless others are named.
 LOCAL_ORIGINS = tuple(f"http://{host}:{port}" for port in (3000, 3097) for host in ("localhost", "127.0.0.1"))
+
+
+# How the minor-exposed rule places exposure (ARGUS_DARKROOM_MINOR_EXPOSED); the first is the default.
+MINOR_EXPOSED_RULES: tuple[MinorExposedRule, ...] = ("frame", "overlap")
 
 
 class ConfigError(ValueError):
@@ -28,6 +34,8 @@ class Settings:
     ollama_model: str = ""
     nudenet_url: str = ""  # empty: SFW generation is unavailable
     age_url: str = ""  # curator's POST /faces?body=true; empty falls back to the in-process [age] extra
+    # frame: any age estimate under 18 plus exposure anywhere; overlap: exposure placed on a young person's box
+    minor_exposed: MinorExposedRule = "frame"
     policy: str = "default"
     thinking: str = "cascade"
     output_root: Path = Path("darkroom-output")
@@ -45,6 +53,10 @@ class Settings:
     def __post_init__(self) -> None:
         if not self.singguard_url.strip():
             raise ConfigError(f"{PREFIX}SINGGUARD_URL is empty: darkroom never runs unguarded")
+        if self.minor_exposed not in MINOR_EXPOSED_RULES:
+            raise ConfigError(
+                f"{PREFIX}MINOR_EXPOSED is {self.minor_exposed!r}: it must be one of {', '.join(MINOR_EXPOSED_RULES)}"
+            )
         if self.thinking not in THINKING_MODES:
             raise ConfigError(f"{PREFIX}THINKING must be one of {', '.join(THINKING_MODES)}")
         try:
@@ -79,6 +91,7 @@ class Settings:
             ollama_model=get("OLLAMA_MODEL"),
             nudenet_url=get("NUDENET_URL"),
             age_url=get("AGE_URL"),
+            minor_exposed=get("MINOR_EXPOSED") or defaults["minor_exposed"].default,
             policy=get("POLICY") or ("adult-granular" if allow_nsfw else "default"),
             thinking=get("THINKING", "cascade"),
             output_root=Path(get("OUTPUT_ROOT") or "darkroom-output"),

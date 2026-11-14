@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ARGUS_DARKROOM_MINOR_EXPOSED` picks how the `minor-exposed` rule places exposure: `frame` (the default, unchanged:
+  any age estimate under 18 plus a NudeNet exposed score of 0.2 or more) or `overlap` (argus-curator's original rule:
+  an exposed NudeNet detection deletes when its box overlaps a person, else face, box estimated under 18, or no box at
+  all, and fails closed when a young face has no body or the exposure has no box). Any other value refuses to start.
+  `/health` reports it as `minor_exposed`.
+- The record's `guard.age` (and `guard.input.age`) gains `people`, every person box with its estimate and the face it
+  was matched to, and `minor_exposed_rule`. Both are optional: older records load as `[]` and `"frame"`.
+  `guard.nudenet` (and `guard.input.nudenet`) gains `detections`: every NudeNet detection's label, score and box
+  (never pixels), so an `overlap` decision can be recomputed from the record. Older records load as `[]`.
+  `record_version` stays 1.0; the wire schema is regenerated.
+- The age estimators keep curator's matched person boxes (`HttpAgeEstimator.read`, `CuratorAgeEstimator.read`).
+  `estimate` still returns the faces alone.
+
+### Fixed
+
+- The spec said darkroom applied curator's `minor_exposed` rule; it applied the whole-frame rule. It now describes
+  both rules and the default.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added
