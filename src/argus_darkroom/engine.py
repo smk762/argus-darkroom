@@ -67,8 +67,9 @@ logger = structlog.get_logger()
 Emit = Callable[[str, dict], None]
 _REASON_MAX = 500
 INPUT_REFUSAL = "input image: "
-# A run of base64 this long in an error message is a piece of the input image (ComfyUI can echo a node's inputs).
-_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{100,}={0,2}")
+# A run of base64 this long in an error message is a piece of the input image (ComfyUI can echo a node's inputs). The
+# client cuts ComfyUI's error bodies short, so a shorter run that the cut ends is a piece too.
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{100,}={0,2}|[A-Za-z0-9+/]{40,}={0,2}\Z")
 
 
 def _scrub(reason: str) -> str:

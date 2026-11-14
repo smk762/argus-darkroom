@@ -389,3 +389,13 @@ def test_nudenet_sees_the_input_and_then_the_output(tmp_path, singguard, monkeyp
         monkeypatch.setattr(tempfile, "tempdir", str(rig.systmp))
         rig.generate(rig.engine(), init_image=init())
         assert nudenet.calls == 2
+
+
+def test_a_piece_of_base64_cut_short_at_the_end_of_an_error_is_removed() -> None:
+    from argus_darkroom.engine import _scrub
+
+    cut = 'ComfyUI rejected the workflow: {"12": {"inputs": {"image": "' + CANONICAL_B64[:60]
+    assert CANONICAL_B64[:60] not in _scrub(cut)
+    assert _scrub("ComfyUI failed in node KSampler: torch.OutOfMemoryError") == (
+        "ComfyUI failed in node KSampler: torch.OutOfMemoryError"
+    )

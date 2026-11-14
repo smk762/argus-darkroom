@@ -83,13 +83,15 @@ def writes_to_disk(class_type: str) -> bool:
 
 
 # A node whose class name says it loads an image, a latent or video frames from ComfyUI's disk (LoadImage,
-# LoadImageMask, LoadLatent, LoadVideo, VHS_LoadVideo, ...) brings in pixels darkroom never checked.
-_LOADING_WORDS = ("loadimage", "loadlatent", "loadvideo")
+# LoadImageMask, LoadLatent, LoadVideo, VHS_LoadVideo, "Load Image Batch", "Image Load", ...) brings in pixels darkroom
+# never checked. Names are compared with everything but letters and digits removed: custom nodes use spaces and dashes.
+_LOADING_WORDS = ("loadimage", "imageload", "loadlatent", "loadvideo")
+_NOT_ALNUM = re.compile(r"[^a-z0-9]")
 
 
 def loads_unchecked_image(class_type: str) -> bool:
     """Whether *class_type* is, or by its name looks like, a node that loads an image darkroom did not check."""
-    lowered = class_type.casefold().replace("_", "")
+    lowered = _NOT_ALNUM.sub("", class_type.casefold())
     return class_type != LOADER_NODE and any(word in lowered for word in _LOADING_WORDS)
 
 

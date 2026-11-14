@@ -465,6 +465,9 @@ def test_a_denoise_slot_without_an_input_is_refused() -> None:
         "LoadLatent",
         "LoadVideo",
         "VHS_LoadVideo",
+        "Load Image Batch",
+        "Image Load",
+        "Load-Image",
     ],
 )
 def test_a_node_that_loads_an_unchecked_image_is_refused_at_load(class_type) -> None:

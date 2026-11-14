@@ -145,7 +145,7 @@ class InputMask:
     def __repr__(self) -> str:  # never the pixels, in a log or a traceback
         return f"InputMask(sha256={self.sha256}, {self.width}x{self.height}, masked={self.masked_fraction})"
 
-    @property
+    @cached_property  # encoded once, like InputImage.base64
     def base64(self) -> str:
         return base64.b64encode(self.png).decode("ascii")
 
