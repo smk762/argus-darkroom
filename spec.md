@@ -1,6 +1,6 @@
 # argus-darkroom — build doc
 
-Guarded image generation for the Argus suite. A prompt is checked before anything is generated. Each output is checked twice, once on its own and once alongside the prompt that made it, and only then released or destroyed. Generation is done by ComfyUI and prompt expansion by Ollama, both external; darkroom orchestrates them, judges the results and keeps the record. Its demo UI is [argus-safelight](../argus-safelight/spec.md). This doc is the build plan; the repo does not exist yet.
+Guarded image generation for the Argus suite. A prompt is checked before anything is generated. Each output is checked twice, once on its own and once alongside the prompt that made it, and only then released or destroyed. Generation is done by ComfyUI and prompt expansion by Ollama, both external; darkroom orchestrates them, judges the results and keeps the record. Its demo UI is [argus-safelight](../argus-safelight/spec.md). This doc is the design and the reasoning behind it. `README.md` covers running it, and `CHANGELOG.md` covers what has shipped.
 
 ```
 argus-quarry -> argus-curator -> argus-lens -> argus-forge -> trainer -> argus-proof
@@ -257,6 +257,8 @@ Deferred until before a public launch:
 - **Record retention.** Keep records forever, or prune by age? Refused and deleted records are the audit trail. Until this is decided, records are kept.
 
 ## Build order
+
+The order the first release was built in, kept for its reasoning. Steps 1 to 7 are done. Step 8 is still open: darkroom still has its own ComfyUI client.
 
 1. **Cortex 0.4.2**, a separate PR in argus-core: `check_text()` and `moderation.policies` (the texts, the illegal table and `mode()`). Curator then imports its policies from cortex (a PR into curator `dev`).
 2. **Engine without generation.** Assemble the prompt, frame it, run pre-flight, compute the outcome table and write records, all tested against fakes. Run the pre-flight evaluation against :9150.
