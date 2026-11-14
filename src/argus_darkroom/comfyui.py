@@ -184,6 +184,9 @@ class ComfyUIClient:
                 f"{self.ws_url}?clientId={client_id}",
                 max_size=None,  # a PNG frame is well over the 1 MiB default
                 open_timeout=self.http_timeout,
+                # No keepalive pings. ComfyUI answers them on its event loop, which stalls for minutes while a large
+                # checkpoint loads, so a 20s ping timeout dropped healthy runs. The render deadline bounds a hang.
+                ping_interval=None,
                 proxy=None,
             ) as ws:
                 resp = self._request("POST", "/prompt", {"prompt": graph, "client_id": client_id})
