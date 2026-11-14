@@ -43,6 +43,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A template with a node that loads an image from ComfyUI's disk (`LoadImage` and the like) is refused at load: an
   image reaches a run only as a checked input.
 
+### Fixed
+
+- The ComfyUI websocket no longer sends keepalive pings. ComfyUI answers them on its event loop, which can stall for
+  minutes while a large checkpoint loads under memory pressure, so a 20 s ping timeout failed SD3.5 runs that ComfyUI
+  went on to finish (`ComfyUI websocket failed: sent 1011 (internal error) keepalive ping timeout`). The render
+  deadline (600 s) still bounds a hung ComfyUI.
+
 ## [0.1.3] - 2026-11-09
 
 ### Added

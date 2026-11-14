@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fake_comfyui import IMAGE_HEADER, PREVIEW_HEADER, FakeComfyUI, event, grey_png
 
+from argus_darkroom import comfyui as comfyui_module
 from argus_darkroom.comfyui import ComfyUIClient, GenerationError
 
 GRAPH = {
@@ -45,6 +46,21 @@ def test_history_is_cleared_when_the_run_fails() -> None:
     with FakeComfyUI(script) as fake, pytest.raises(GenerationError, match="KSampler: out of memory"):
         client(fake).render(GRAPH, "9")
     assert fake.history == {}
+
+
+def test_the_websocket_sends_no_keepalive_pings(comfyui, monkeypatch) -> None:
+    # A stalled ComfyUI event loop (a large checkpoint loading) leaves pings unanswered; a ping timeout then failed a
+    # run that ComfyUI went on to finish. The render deadline is what bounds a hang.
+    seen: list[dict] = []
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs)
+        return real_connect(*args, **kwargs)
+
+    real_connect = comfyui_module.connect
+    monkeypatch.setattr(comfyui_module, "connect", spy)
+    assert client(comfyui).render(GRAPH, "9").image == comfyui.png
+    assert seen and seen[0]["ping_interval"] is None
 
 
 def test_a_rejected_workflow_is_a_generation_error(comfyui) -> None:
