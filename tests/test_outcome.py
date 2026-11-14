@@ -5,11 +5,11 @@ from __future__ import annotations
 import itertools
 
 import pytest
-from argus_cortex.moderation import GuardResult
+from argus_cortex.moderation import GuardResult, NsfwDetection
 
 from argus_darkroom.guard import classify, unchecked
-from argus_darkroom.models import AgeRecord, Cell, FaceAge, ScanCells
-from argus_darkroom.outcome import decide, minor_exposed
+from argus_darkroom.models import AgeRecord, Cell, FaceAge, PersonAge, ScanCells
+from argus_darkroom.outcome import decide, minor_exposed, overlaps
 
 SAFE = Cell(state="safe", result=GuardResult(safe=True))
 FLAGGED = Cell(state="flagged", result=GuardResult(safe=False, rules=["B. Real-World Crimes"]))
@@ -210,6 +210,115 @@ def test_no_nudenet_answer_cannot_make_minor_exposed() -> None:
 def test_illegal_and_minor_exposed_report_both() -> None:
     cells = scans((ILLEGAL, SAFE))
     assert decide("adult-granular", cells, 0.5, age=faces(10)).reason == "adult-granular:A, minor-exposed"
+
+
+# --- the overlap rule ------------------------------------------------------------------------------------
+#
+# Two people side by side: LEFT is x 0-100, RIGHT is x 200-300. A face sits at the top of each body.
+
+LEFT, RIGHT = (0.0, 0.0, 100.0, 300.0), (200.0, 0.0, 100.0, 300.0)
+LEFT_FACE, RIGHT_FACE = (30.0, 10.0, 40.0, 40.0), (230.0, 10.0, 40.0, 40.0)
+ON_LEFT, ON_RIGHT, ON_NOBODY = (20.0, 150.0, 40.0, 40.0), (220.0, 150.0, 40.0, 40.0), (500.0, 150.0, 40.0, 40.0)
+
+
+def exposed(*boxes: tuple[float, float, float, float], label: str = "FEMALE_BREAST_EXPOSED") -> list[NsfwDetection]:
+    return [NsfwDetection(label=label, score=0.6, bbox=list(b)) for b in boxes]
+
+
+def two_people(left_years: float, right_years: float) -> AgeRecord:
+    """Two faces, each matched to its body; curator puts a matched person's age on the face only."""
+    return AgeRecord(
+        faces=[
+            FaceAge(age_estimate_years=left_years, bbox=LEFT_FACE),
+            FaceAge(age_estimate_years=right_years, bbox=RIGHT_FACE),
+        ],
+        people=[PersonAge(bbox=LEFT, face_index=0), PersonAge(bbox=RIGHT, face_index=1)],
+    )
+
+
+def overlap(age: AgeRecord | None, detections: list[NsfwDetection], score: float = 0.6) -> bool:
+    return minor_exposed(age, score, detections, "overlap")
+
+
+def test_overlaps_is_shared_area_only() -> None:
+    assert overlaps((0, 0, 10, 10), (5, 5, 10, 10))
+    assert not overlaps((0, 0, 10, 10), (10, 0, 10, 10))  # touching edges share no area
+    assert not overlaps((0, 0, 10, 10), (20, 20, 5, 5))
+
+
+def test_frame_is_the_default_and_ignores_boxes() -> None:
+    # The young person is clothed and the exposure is on the adult: frame still fires, as it always has.
+    age = two_people(12, 35)
+    assert minor_exposed(age, 0.6, exposed(ON_RIGHT))
+    assert minor_exposed(age, 0.6, exposed(ON_RIGHT), "frame")
+    assert decide("adult-granular", CLEAN, 0.6, age=age, detections=exposed(ON_RIGHT)).outcome == "deleted"
+
+
+def test_overlap_exposure_on_a_young_person_flags() -> None:
+    assert overlap(two_people(12, 35), exposed(ON_LEFT))
+    decision = decide(
+        "adult-granular", CLEAN, 0.6, age=two_people(12, 35), detections=exposed(ON_LEFT), minor_rule="overlap"
+    )
+    assert (decision.outcome, decision.reason, decision.critical) == ("deleted", "minor-exposed", True)
+
+
+def test_overlap_exposure_on_an_adult_only_does_not_flag() -> None:
+    assert not overlap(two_people(12, 35), exposed(ON_RIGHT))
+    decision = decide(
+        "adult-granular", CLEAN, 0.6, age=two_people(12, 35), detections=exposed(ON_RIGHT), minor_rule="overlap"
+    )
+    assert decision.outcome == "passed"
+
+
+def test_overlap_exposure_on_no_box_flags() -> None:
+    assert overlap(two_people(12, 35), exposed(ON_NOBODY))
+
+
+def test_overlap_a_young_face_without_a_person_box_flags_any_exposure() -> None:
+    age = two_people(12, 35)
+    age.people = [age.people[1]]  # the young face's body was not found
+    assert overlap(age, exposed(ON_RIGHT))
+
+
+def test_overlap_a_faceless_young_person_is_placed_by_its_box() -> None:
+    # An unmatched person's estimate is in faces too (appended last) and is not a face missing its body.
+    age = AgeRecord(
+        faces=[FaceAge(age_estimate_years=35, bbox=RIGHT_FACE), FaceAge(age_estimate_years=12, bbox=LEFT)],
+        people=[PersonAge(bbox=RIGHT, face_index=0), PersonAge(bbox=LEFT, age_estimate_years=12)],
+    )
+    assert overlap(age, exposed(ON_LEFT))
+    assert not overlap(age, exposed(ON_RIGHT))
+
+
+def test_overlap_without_people_uses_face_boxes() -> None:
+    age = AgeRecord(
+        faces=[
+            FaceAge(age_estimate_years=12, bbox=(0, 0, 100, 100)),
+            FaceAge(age_estimate_years=35, bbox=(200, 0, 100, 100)),
+        ]
+    )
+    assert overlap(age, exposed((10, 10, 20, 20)))
+    assert not overlap(age, exposed((210, 10, 20, 20)))
+    assert overlap(age, exposed((500, 500, 20, 20)))
+
+
+def test_overlap_exposure_with_no_detection_box_flags() -> None:
+    # NudeNet scored exposure but returned no exposed detection to place: fail closed.
+    assert overlap(two_people(12, 35), [])
+    assert overlap(two_people(12, 35), exposed(ON_RIGHT, label="FACE_FEMALE"))
+
+
+def test_overlap_needs_a_young_age_and_an_exposed_score() -> None:
+    assert not overlap(two_people(30, 35), exposed(ON_LEFT))
+    assert not overlap(two_people(12, 35), exposed(ON_LEFT), score=0.19)
+    assert not overlap(None, exposed(ON_LEFT))
+    assert not minor_exposed(two_people(12, 35), None, exposed(ON_LEFT), "overlap")
+
+
+def test_overlap_ignores_detections_under_the_floor() -> None:
+    weak = [NsfwDetection(label="FEMALE_BREAST_EXPOSED", score=0.1, bbox=list(ON_LEFT))]
+    # The only exposed detection on the young person is under 0.2; another on the adult places the rest.
+    assert not overlap(two_people(12, 35), [*weak, *exposed(ON_RIGHT)])
 
 
 def test_enforcing_policy_must_have_cells() -> None:

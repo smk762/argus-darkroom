@@ -24,6 +24,7 @@ from rig import (  # noqa: F401
 )
 
 from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator, HttpAgeEstimator
+from argus_darkroom.config import Settings
 from argus_darkroom.models import FaceAge, GenerationRecord
 from argus_darkroom.prompt import frame
 from argus_darkroom.request import RequestError
@@ -361,6 +362,44 @@ def test_a_faceless_person_under_18_with_exposure_deletes(rig) -> None:
     assert_no_bytes(rig, record, before)
 
 
+def faces_beside_an_adult():
+    """A clothed faceless person estimated at 15 at x 200, beside an adult whose face and body are at the origin."""
+    return FakeFaces(
+        faces=[{"age_estimate_years": 40.0, "bbox": [0, 0, 10, 10]}],
+        people=[
+            {"age_estimate_years": None, "bbox": [0, 0, 20, 40], "face_index": 0},
+            {"age_estimate_years": 15.0, "bbox": [200, 0, 50, 100], "face_index": None},
+        ],
+        people_check="ok",
+    )
+
+
+@pytest.mark.parametrize(("rule", "outcome"), [("frame", "deleted"), ("overlap", "passed")])
+def test_the_minor_rule_places_exposure_as_configured(rig, rule, outcome) -> None:
+    # NudeNet's exposed box is on the adult. frame (the default) deletes on any young age; overlap does not.
+    rig.settings = Settings(**{**rig.settings.__dict__, "minor_exposed": rule})
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    with faces_beside_an_adult() as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    assert record.outcome == outcome
+    assert record.guard.age.minor_exposed_rule == rule
+    assert record.guard.age.minor_exposed is (outcome == "deleted")
+    assert [p.face_index for p in record.guard.age.people] == [0, None]
+
+
+def test_overlap_deletes_exposure_on_the_young_persons_box(rig) -> None:
+    rig.settings = Settings(**{**rig.settings.__dict__, "minor_exposed": "overlap"})
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    rig.nudenet.box = [210, 40, 20, 20]
+    before = rig.files()
+    with faces_beside_an_adult() as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    assert (record.outcome, record.outcome_reason, record.critical) == ("deleted", "minor-exposed", True)
+    assert_no_bytes(rig, record, before)
+
+
 @pytest.mark.parametrize(
     "estimator", [None, FakeAge(error=AgeUnavailable("no weights")), FakeAge(error=RuntimeError("boom"))]
 )
@@ -435,6 +474,26 @@ def test_an_unmatched_person_with_an_estimate_counts_as_a_face() -> None:
 def test_an_unmatched_person_with_no_estimate_makes_the_check_unavailable(person) -> None:
     with pytest.raises(AgeUnavailable, match="no age for a detected person"):
         CuratorAgeEstimator(fake_detect_people(person)).estimate(b"x")
+
+
+def test_the_in_process_check_keeps_matched_person_boxes() -> None:
+    from argus_curator.models import FaceAttributes, FaceDetection, PersonDetection
+
+    def detect(results, items, cfg, **kw):
+        results[0].people_check = "ok"
+        attrs = FaceAttributes(age_years=40.0, age_source="mivolo")
+        results[0].faces.append(FaceDetection(bbox=[1, 2, 30, 40], det_score=0.9, attributes=attrs))
+        results[0].people.append(PersonDetection(bbox=[0, 0, 40, 80], det_score=0.9, face_index=0, age_years=40.0))
+        results[0].people.append(
+            PersonDetection(bbox=[100, 0, 40, 80], det_score=0.9, age_years=15.0, age_source="mivolo")
+        )
+
+    reading = CuratorAgeEstimator(detect).read(b"x")
+    assert [f.age_estimate_years for f in reading.faces] == [40.0, 15.0]
+    assert [(p.bbox, p.age_estimate_years, p.face_index) for p in reading.people] == [
+        ((0, 0, 40, 80), 40.0, 0),
+        ((100, 0, 40, 80), 15.0, None),
+    ]
 
 
 def test_an_unknown_people_check_makes_the_check_unavailable() -> None:

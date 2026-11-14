@@ -28,6 +28,8 @@ Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", description="lowercase 
 Outcome = Literal["refused", "passed", "review", "deleted", "omitted", "failed"]
 Mode = Literal["sfw", "nsfw"]
 CellState = Literal["safe", "flagged", "illegal", "unchecked"]
+# How the minor-exposed rule places exposure: anywhere in the frame, or by box overlap (ARGUS_DARKROOM_MINOR_EXPOSED).
+MinorExposedRule = Literal["frame", "overlap"]
 
 _Versioned = make_versioned_base(
     "record_version", RECORD_VERSION, SUPPORTED_RECORD_MAJORS, label="record_version", class_name="_Versioned"
@@ -157,10 +159,28 @@ class FaceAge(BaseModel):
     bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
 
 
+class PersonAge(BaseModel):
+    """One person (body) box from curator's person detector, with its MiVOLO estimate when it has one.
+
+    ``face_index`` is the face in :attr:`AgeRecord.faces` this person was matched to, or ``None`` for a body with
+    no face. A matched person's estimate may be ``None``: the face carries it. An unmatched person's estimate is
+    also in :attr:`AgeRecord.faces`, so ``faces`` alone still holds every estimate.
+    """
+
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
+    age_estimate_years: float | None = None
+    face_index: int | None = None
+
+
 class AgeRecord(BaseModel):
     source: Literal["mivolo"] = "mivolo"
+    # Every estimate: each face, then each person with no face (a faceless minor is still a minor).
     faces: list[FaceAge] = Field(default_factory=list)
+    # Every person box, matched or not. Empty when the estimator found none or does not report them.
+    people: list[PersonAge] = Field(default_factory=list)
     minor_exposed: bool = False
+    # Which rule decided minor_exposed. Records from before the setting existed used "frame".
+    minor_exposed_rule: MinorExposedRule = "frame"
 
 
 class InputScanRecord(BaseModel):

@@ -11,7 +11,7 @@ from argus_darkroom.age import (
     default_estimator,
     remote_age_status,
 )
-from argus_darkroom.config import Settings
+from argus_darkroom.config import ConfigError, Settings
 
 
 def test_http_estimator_posts_the_buffer_and_returns_faces() -> None:
@@ -74,6 +74,42 @@ def test_http_estimator_matched_person_with_no_body_estimate_is_skipped() -> Non
     assert [f.age_estimate_years for f in faces] == [34.2]
 
 
+def test_http_estimator_keeps_every_person_box_and_its_face() -> None:
+    with FakeFaces(
+        faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}],
+        people=[
+            {"age_estimate_years": None, "bbox": [0, 0, 10, 20], "face_index": 0},
+            {"age_estimate_years": 15.0, "bbox": [40, 0, 10, 20], "face_index": None},
+        ],
+        people_check="ok",
+    ) as fake:
+        reading = HttpAgeEstimator(fake.url).read(b"x")
+    # faces means what it always has: the frame rule reads only it.
+    assert [f.age_estimate_years for f in reading.faces] == [34.2, 15.0]
+    assert [(p.bbox, p.age_estimate_years, p.face_index) for p in reading.people] == [
+        ((0.0, 0.0, 10.0, 20.0), None, 0),
+        ((40.0, 0.0, 10.0, 20.0), 15.0, None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "person",
+    [
+        {"age_estimate_years": None, "bbox": [0, 0, 10], "face_index": 0},
+        {"age_estimate_years": None, "bbox": [0, 0, 10, 20], "face_index": 5},
+        {"age_estimate_years": None, "bbox": [0, 0, 10, 20], "face_index": True},
+    ],
+)
+def test_http_estimator_drops_a_matched_person_it_cannot_place(person) -> None:
+    # Not unavailable: the face still carries the estimate. The overlap rule then sees a face with no body.
+    with FakeFaces(
+        faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}], people=[person], people_check="ok"
+    ) as fake:
+        reading = HttpAgeEstimator(fake.url).read(b"x")
+    assert [f.age_estimate_years for f in reading.faces] == [34.2]
+    assert reading.people == []
+
+
 def test_http_estimator_people_check_failed_is_unavailable() -> None:
     with (
         FakeFaces(people_check="detection_failed", people_error="onnx exploded") as fake,
@@ -109,6 +145,22 @@ def test_default_estimator_keeps_the_http_client_when_health_is_down() -> None:
     est, status = default_estimator("http://127.0.0.1:1")
     assert not status.available
     assert isinstance(est, HttpAgeEstimator)
+
+
+def test_minor_exposed_defaults_to_frame(monkeypatch) -> None:
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.delenv("ARGUS_DARKROOM_MINOR_EXPOSED", raising=False)
+    assert Settings.from_env().minor_exposed == "frame"
+    monkeypatch.setenv("ARGUS_DARKROOM_MINOR_EXPOSED", "overlap")
+    assert Settings.from_env().minor_exposed == "overlap"
+
+
+@pytest.mark.parametrize("value", ["frames", "Overlap", "off", "1"])
+def test_an_unknown_minor_exposed_rule_refuses_to_start(monkeypatch, value) -> None:
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_DARKROOM_MINOR_EXPOSED", value)
+    with pytest.raises(ConfigError, match="MINOR_EXPOSED"):
+        Settings.from_env()
 
 
 def test_from_env_reads_age_url(monkeypatch) -> None:

@@ -14,6 +14,22 @@
           "title": "Minor Exposed",
           "type": "boolean"
         },
+        "minor_exposed_rule": {
+          "default": "frame",
+          "enum": [
+            "frame",
+            "overlap"
+          ],
+          "title": "Minor Exposed Rule",
+          "type": "string"
+        },
+        "people": {
+          "items": {
+            "$ref": "#/$defs/PersonAge"
+          },
+          "title": "People",
+          "type": "array"
+        },
         "source": {
           "const": "mivolo",
           "default": "mivolo",
@@ -623,6 +639,60 @@
         "blur"
       ],
       "title": "NudeNetRecord",
+      "type": "object"
+    },
+    "PersonAge": {
+      "description": "One person (body) box from curator's person detector, with its MiVOLO estimate when it has one.\n\n``face_index`` is the face in :attr:`AgeRecord.faces` this person was matched to, or ``None`` for a body with\nno face. A matched person's estimate may be ``None``: the face carries it. An unmatched person's estimate is\nalso in :attr:`AgeRecord.faces`, so ``faces`` alone still holds every estimate.",
+      "properties": {
+        "age_estimate_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Estimate Years"
+        },
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "face_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Index"
+        }
+      },
+      "required": [
+        "bbox"
+      ],
+      "title": "PersonAge",
       "type": "object"
     },
     "RequestRecord": {

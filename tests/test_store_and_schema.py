@@ -67,3 +67,17 @@ def test_no_pixels_in_the_schema_of_a_deleted_record() -> None:
     for banned in ("thumbnail", "preview", "base64", "data_url"):
         assert banned not in schema
     assert '"sha256"' in schema and '"phash"' in schema
+
+
+def test_a_record_from_before_the_overlap_rule_still_loads() -> None:
+    """``people`` and ``minor_exposed_rule`` are new: an older record has neither, and was decided by frame."""
+    data = record("deleted").model_dump(mode="json")
+    data["guard"]["age"] = {
+        "source": "mivolo",
+        "faces": [{"age_estimate_years": 16.0, "bbox": [0, 0, 10, 10]}],
+        "minor_exposed": True,
+    }
+    loaded = GenerationRecord.model_validate(data)
+    assert loaded.guard.age is not None
+    assert loaded.guard.age.people == [] and loaded.guard.age.minor_exposed_rule == "frame"
+    assert loaded.guard.age.minor_exposed
