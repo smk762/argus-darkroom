@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
 ### Added
 
 - **Image-to-image.** A request may carry `init_image` (`data_base64`: PNG, JPEG or WebP, at most 16 MiB and 4096 px
@@ -42,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkflowSet.select` and `lora_counts` take a `mode` instead of an `img2img` flag.
 - A template with a node that loads an image from ComfyUI's disk (`LoadImage` and the like) is refused at load: an
   image reaches a run only as a checked input.
+- **argus-cortex `>=0.4.6,<0.6`** (was `<0.5`). The Docker image and a plain `pip install argus-darkroom[server,cli]` get
+  cortex 0.5. The `[age]` and `[dev]` extras stay on 0.4.x while argus-curator caps cortex below 0.5. darkroom uses
+  nothing 0.5 changed, and the tests and `make smoke` pass on both 0.4.7 and 0.5.0.
+- **Docs:** the README lists every CLI option and the real exit codes (a malformed option also exits 2), and gives the
+  full `/policies` and `/models` shapes (#45).
 
 ### Fixed
 
