@@ -120,6 +120,25 @@ curl -s localhost:8188/object_info/DarkroomLoadMaskBase64 | head -c 200
 An empty `{}` means ComfyUI has not loaded it; an image-to-image or inpainting run then fails (`failed`) after its
 input scan.
 
+### ComfyUI: the `DarkroomDepthAnything` node (depth maps)
+
+`POST /depth/{id}` makes a depth map of a record's stored image with Depth Anything V2 Small, through a node vendored in
+this repo: [`comfyui/darkroom_depth.py`](comfyui/darkroom_depth.py). It loads the model with `transformers` from a local
+folder under ComfyUI's models directory and never downloads at run time. Only the Small model (Apache-2.0) loads:
+Depth Anything V2 Base and Large are CC-BY-NC-4.0, so any other name, or a folder whose `config.json` is not the Small
+model's, is refused. One-time setup, beside the base64 loader above (which the depth graph also uses):
+
+```bash
+huggingface-cli download depth-anything/Depth-Anything-V2-Small-hf \
+    --local-dir /path/to/ComfyUI/models/depth/Depth-Anything-V2-Small-hf
+cp comfyui/darkroom_depth.py comfyui/darkroom_load_image_base64.py /path/to/ComfyUI/custom_nodes/
+# restart ComfyUI, then:
+curl -s localhost:8188/object_info/DarkroomDepthAnything | head -c 200
+```
+
+The depth graph is built into darkroom (`argus_darkroom/depth.py`), not a template: generation never selects it and
+`/models` does not list it. It needs no ComfyUI node beyond these and `SaveImageWebsocket`.
+
 ### Workflow templates
 
 A template is a ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, `$positive`, `$negative`,
@@ -250,12 +269,23 @@ silent fall back to the unexpanded prompt.
 | `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
-| `DELETE /record/{id}` | removes the user's own image; the record stays |
-| `GET /archive` | streamed zip of every record and stored image |
+| `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
+| `POST /depth/{id}` | a depth map of the record's stored image; returns the record's new `depth` object. 404 for no such record, 409 when the record has no stored image (deleted, omitted, refused, failed or removed) or a generation is running (it shares the one-at-a-time lock), 502 when ComfyUI fails. Idempotent: a second call returns the stored map without recomputing. A write: refused cross-site and under `READ_ONLY` |
+| `GET /depth/{id}` | the depth map as `image/png`; 404 with the record id when there is none |
+| `GET /archive` | streamed zip of every record, stored image (`images/`) and depth map (`depth/<id>.png`) |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |
 | `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
+
+### Depth maps
+
+A depth map is derived from an image darkroom already judged and released, with no new prompt and no new imagery, so it
+gets no pre-flight and no scan; the guard for generations is unchanged. The PNG is 8-bit greyscale (`L`) at the image's
+size, near bright (255) and far dark (0), stretched min to max per image (Depth Anything's relative inverse depth), with
+no metadata. It is stored beside the image as `<id>.depth.png`, and removing or purging the image removes it. The
+record's `depth` is `{model: "depth-anything-v2-small", model_license: "Apache-2.0", sha256, width, height, created_at,
+workflow, engine_version}` (`sha256` of the stored PNG), or `null`.
 
 The generate and pre-flight body: `user_prompt`, `negative_prompt`, `expand`, `seed`, `sampling`, `checkpoint`, `vae`,
 `loras` (`{name, weight, trigger_words}`), `enforcing_policy`, `advisory_policies`, `thinking`, `nsfw_threshold`, and

@@ -55,9 +55,25 @@ def default_script(fake: FakeComfyUI, prompt_id: str, graph: dict) -> list:
         event("progress", value=1, max=2, node="3", prompt_id=prompt_id),
         event("progress", value=2, max=2, node="3", prompt_id=prompt_id),
         event("executing", node=save, prompt_id=prompt_id),
-        IMAGE_HEADER + fake.png,
+        IMAGE_HEADER + (fake.depth_png if is_depth(graph) else fake.png),
         event("executing", node=None, prompt_id=prompt_id),
     ]
+
+
+def is_depth(graph: dict) -> bool:
+    return any(n["class_type"] == "DarkroomDepthAnything" for n in graph.values())
+
+
+def gradient_png(width: int = 32, height: int = 32) -> bytes:
+    """What the depth node sends back: grey, brighter (nearer) to the bottom, as RGB like ComfyUI's IMAGE."""
+    image = Image.new("RGB", (width, height))
+    for y in range(height):
+        for x in range(width):
+            v = 40 + y * 160 // max(height - 1, 1)
+            image.putpixel((x, y), (v, v, v))
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
 
 
 class FakeComfyUI:
@@ -71,6 +87,7 @@ class FakeComfyUI:
         self.output_nodes = output_nodes
         self.unknown_nodes = unknown_nodes
         self.png = grey_png()
+        self.depth_png = gradient_png()  # sent for a depth graph; at another size than the image, as the model may
         self.version = "0.3.test"
         self.reject_with: dict | None = None
         self.history: dict[str, dict] = {}

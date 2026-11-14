@@ -8,8 +8,10 @@
 ``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
 ``GET /image/{id}``       ids only, no path input; 404 with the record id when there is no stored image
-``DELETE /record/{id}``   the user removing their own output: the file goes, the record stays
-``GET /archive``          a streamed zip of every record and every stored image (read-only, always on)
+``DELETE /record/{id}``   the user removing their own output: the file goes (its depth map too), the record stays
+``POST /depth/{id}``      a depth map of the record's stored image (idempotent; shares the generation lock)
+``GET /depth/{id}``       that depth map, as an 8-bit greyscale PNG; 404 with the record id when there is none
+``GET /archive``          a streamed zip of every record, stored image and depth map (read-only, always on)
 ``POST /purge``           everything, from a clean slate; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ``POST /purge/{id}``      one record and its image; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ========================  =====================================================================================
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -48,9 +51,9 @@ from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
 from argus_darkroom.modelfiles import pick_default
-from argus_darkroom.models import GenerationRecord, Outcome
+from argus_darkroom.models import DepthRecord, GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
-from argus_darkroom.store import valid_id
+from argus_darkroom.store import DEPTH_SUFFIX, valid_id
 from argus_darkroom.workflow import checkpoint_family
 
 logger = structlog.get_logger()
@@ -335,16 +338,80 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 return found
             if found.image is None or found.image.path is None:
                 raise HTTPException(409, "this record has no stored image to remove")
-            engine.store.remove_image(record_id)
+            engine.store.remove_image(record_id)  # and its depth map
             found.image.path = None
+            found.depth = None
             found.removed_at = datetime.now(UTC)
             engine.store.save(found)
             return found
 
+    # -- depth maps --------------------------------------------------------------------------------------
+    def stored_image(found: GenerationRecord) -> bytes:
+        """The record's stored image, checked against the record's hash. 409 when it has none."""
+        path = engine.store.image_path(found.id)
+        if found.image is None or found.image.path is None or found.removed_at is not None or not path.is_file():
+            raise HTTPException(409, "this record has no stored image")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != found.image.sha256:
+            raise HTTPException(409, "the stored image does not match its record")
+        return data
+
+    @app.post("/depth/{record_id}")
+    async def make_depth(record_id: str) -> DepthRecord:
+        """A depth map of the record's stored image, computed once and kept beside it.
+
+        No pre-flight and no scan: the image was already judged and released, and nothing new (no prompt, no imagery)
+        goes in. See :mod:`argus_darkroom.depth`. A write: ``WriteGuard`` and read-only cover it like every POST.
+        """
+        found = record_or_404(record_id)
+        if found.depth is not None and engine.store.depth_path(record_id).is_file():
+            return found.depth  # already made: never recomputed
+        image = stored_image(found)
+        if not busy.acquire(blocking=False):
+            raise HTTPException(409, "a generation is already running")
+
+        def compute() -> DepthRecord:
+            try:
+                depth_map, depth_record = engine.depth(found, image)
+            except GenerationError as exc:
+                logger.warning("depth.failed", record_id=record_id, error=str(exc))
+                raise HTTPException(502, f"the depth map could not be made: {exc}") from exc
+            with record_lock:
+                # Read again: the image may have been removed, or the record purged, while ComfyUI ran.
+                current = record_or_404(record_id)
+                if current.depth is not None and engine.store.depth_path(record_id).is_file():
+                    return current.depth
+                if current.image is None or current.image.path is None or current.removed_at is not None:
+                    raise HTTPException(409, "this record has no stored image")
+                engine.store.write_depth(record_id, depth_map.png)
+                current.depth = depth_record
+                try:
+                    engine.store.save(current)
+                except Exception:
+                    engine.store.depth_path(record_id).unlink(missing_ok=True)
+                    raise
+                return depth_record
+
+        try:
+            return await run_in_threadpool(compute)
+        finally:
+            busy.release()
+
+    @app.get("/depth/{record_id}")
+    def depth_image(record_id: str):
+        found = record_or_404(record_id)
+        path = engine.store.depth_path(record_id)
+        if found.depth is None or not path.is_file():
+            return JSONResponse(
+                {"detail": "this record has no depth map", "record_id": record_id, "outcome": found.outcome},
+                status_code=404,
+            )
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
     @app.get("/archive")
     def archive() -> StreamingResponse:
-        """Every record (JSON) and every stored image, as one zip. Deleted and omitted images were never
-        written, so they are not in it."""
+        """Every record (JSON), every stored image and every depth map (``depth/<id>.png``), as one zip. Deleted and
+        omitted images were never written, so they are not in it."""
         store = engine.store
 
         def stream() -> Iterator[bytes]:
@@ -358,6 +425,10 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                     image_path = store.root / f"{path.stem}.png"
                     if image_path.is_file():
                         zf.write(image_path, f"images/{image_path.name}")
+                        yield sink.take()
+                    depth_path = store.root / f"{path.stem}{DEPTH_SUFFIX}"
+                    if depth_path.is_file():
+                        zf.write(depth_path, f"depth/{path.stem}.png")
                         yield sink.take()
             yield sink.take()
 
@@ -411,7 +482,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 removed = {"records": 0, "images": 0}
                 with record_lock:
                     for path in engine.store.root.iterdir():
-                        if valid_id(path.stem) and path.suffix in (".json", ".png"):
+                        if path.name.endswith(DEPTH_SUFFIX) and valid_id(path.name.removesuffix(DEPTH_SUFFIX)):
+                            path.unlink(missing_ok=True)  # derived from an image; counted with neither
+                        elif valid_id(path.stem) and path.suffix in (".json", ".png"):
                             path.unlink(missing_ok=True)
                             removed["records" if path.suffix == ".json" else "images"] += 1
                         elif path.name.endswith((".json.tmp", ".png.tmp")):
