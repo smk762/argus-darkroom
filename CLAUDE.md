@@ -53,9 +53,10 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
 | `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and mode: `+img2img`, `+inpaint`), model sha256s |
 | `images.py` | an image's hashes (`describe`), `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent, and `load_mask`: the inpainting mask, checked against the input's size and cut into a 1-bit PNG |
-| `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk) |
+| `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk), and `DarkroomDepthAnything` (`darkroom_depth.py`: Depth Anything V2 Small only, from a local folder) |
+| `depth.py` | depth maps of a stored image (`POST /depth/{id}`): the built-in graph, never in the workflow set, and the cut to an 8-bit greyscale PNG. No guard runs: the image was already released and nothing new goes in |
 | `age.py` | curator over `AGE_URL` (`POST /faces?body=true`), or in-process `detect_faces` behind the `[age]` extra |
-| `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
+| `store.py` | `<id>.json`, `<id>.png` and `<id>.depth.png` in the output root; atomic image write; removing an image removes its depth map |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
 | `demo/run.py`, `demo/smoke.py` | the real server and engine over the test fakes; a marker in the prompt picks the verdicts. Demo only: it turns `DEVMODE` on and uses fake models |
 | `server/app.py`, `cli.py`, `config.py`, `request.py` | HTTP, Typer, `ARGUS_DARKROOM_*`, the request model (`extra=forbid`) |

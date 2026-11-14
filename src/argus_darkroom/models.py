@@ -236,6 +236,23 @@ class ImageRecord(BaseModel):
     path: str | None = None
 
 
+class DepthRecord(BaseModel):
+    """A depth map derived from the record's stored image (``POST /depth/{id}``), never from a new prompt.
+
+    The PNG is 8-bit greyscale at the image's size, near bright (255) and far dark (0), stretched min to max per image,
+    with no metadata. ``sha256`` is of the stored PNG's bytes. ``workflow`` names darkroom's built-in depth graph.
+    """
+
+    model: str
+    model_license: str
+    sha256: Sha256
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    workflow: str
+    engine_version: str | None = None
+
+
 class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -252,6 +269,8 @@ class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     image: ImageRecord | None = None
     # Set when the user removed their own output (``DELETE /record/{id}``): the file is gone, the record stays.
     removed_at: datetime | None = None
+    # A depth map of the stored image, when one was asked for. null otherwise, and again once the image is removed.
+    depth: DepthRecord | None = None
 
 
 def render_wire_schema() -> str:

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Depth maps** (for argus-mask's plate backdrops). `POST /depth/{id}` makes a depth map of a record's stored image
+  with Depth Anything V2 Small (Apache-2.0) and returns the record's new `depth`; `GET /depth/{id}` serves it as an
+  8-bit greyscale PNG at the image's size, near bright and far dark, min to max, no metadata. Idempotent; shares the
+  generation lock (409 while one runs); 404 for no such record, 409 when the record has no stored image, 502 when
+  ComfyUI fails. A write, so cross-site and read-only refuse it. No pre-flight or scan: the image was already judged
+  and released, and nothing new goes in.
+- The record gains an optional `depth` (`model`, `model_license`, `sha256`, `width`, `height`, `created_at`, `workflow`,
+  `engine_version`); `record_version` stays 1.0 and the wire schema is regenerated. The PNG is kept as
+  `<id>.depth.png` beside the image, is in `/archive` as `depth/<id>.png`, and goes when the image is removed
+  (`DELETE /record/{id}`, `depth` back to `null`) or purged.
+- `comfyui/darkroom_depth.py` (`DarkroomDepthAnything`), a vendored ComfyUI node: copy it into `custom_nodes/` and
+  download the model once into `models/depth/Depth-Anything-V2-Small-hf`. It loads only the Small model, from that
+  local folder, and refuses Base and Large (CC-BY-NC-4.0). The depth graph is built into the package, never a
+  generation template.
+
 - `ARGUS_DARKROOM_MINOR_EXPOSED` picks how the `minor-exposed` rule places exposure: `frame` (the default, unchanged:
   any age estimate under 18 plus a NudeNet exposed score of 0.2 or more) or `overlap` (argus-curator's original rule:
   an exposed NudeNet detection deletes when its box overlaps a person, else face, box estimated under 18, or no box at

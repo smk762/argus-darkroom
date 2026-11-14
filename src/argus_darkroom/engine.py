@@ -24,7 +24,7 @@ import structlog
 from argus_cortex.moderation import NudeNetClient, rule_letter
 from argus_cortex.moderation import policies as policy_table
 
-from argus_darkroom import __version__
+from argus_darkroom import __version__, depth
 from argus_darkroom.age import AgeEstimator, AgeStatus, default_estimator
 from argus_darkroom.comfyui import ComfyUIClient, GenerationError, Progress
 from argus_darkroom.config import Settings
@@ -34,6 +34,7 @@ from argus_darkroom.images import InputImage, InputMask, UnreadableImage, descri
 from argus_darkroom.modelfiles import ModelLibrary
 from argus_darkroom.models import (
     AgeRecord,
+    DepthRecord,
     GenerationRecord,
     GuardRecord,
     InitImageRef,
@@ -421,6 +422,34 @@ class Engine:
                 "nothing may be written before the verdict"
             )
         self._outputs_verified.add(workflow.sha256)
+
+    # -- depth maps ------------------------------------------------------------------------------------
+
+    def depth(self, record: GenerationRecord, image: bytes) -> tuple[depth.DepthMap, DepthRecord]:
+        """A depth map of *record*'s stored image, whose bytes are *image*. Writes nothing: the caller stores it.
+
+        No pre-flight and no scan: the image was already judged and released, and no prompt is involved (see
+        :mod:`argus_darkroom.depth`). Raises :class:`GenerationError`.
+        """
+        if record.image is None:
+            raise GenerationError("the record has no image")
+        self._verify_outputs(depth.WORKFLOW)
+        try:
+            result = self.comfyui.render(depth.graph(image), depth.WORKFLOW.save_node_id)
+            found = depth.to_depth_png(result.image, record.image.width, record.image.height)
+        except GenerationError as exc:
+            raise GenerationError(_scrub(str(exc))[:_REASON_MAX]) from exc
+        except UnreadableImage as exc:
+            raise GenerationError(str(exc)) from exc
+        return found, DepthRecord(
+            model=depth.MODEL,
+            model_license=depth.MODEL_LICENSE,
+            sha256=found.sha256,
+            width=found.width,
+            height=found.height,
+            workflow=depth.WORKFLOW_NAME,
+            engine_version=self.comfyui.engine_version(),
+        )
 
     # -- the input image -------------------------------------------------------------------------------
 

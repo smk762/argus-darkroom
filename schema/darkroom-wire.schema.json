@@ -83,6 +83,66 @@
       "title": "Cell",
       "type": "object"
     },
+    "DepthRecord": {
+      "description": "A depth map derived from the record's stored image (``POST /depth/{id}``), never from a new prompt.\n\nThe PNG is 8-bit greyscale at the image's size, near bright (255) and far dark (0), stretched min to max per image,\nwith no metadata. ``sha256`` is of the stored PNG's bytes. ``workflow`` names darkroom's built-in depth graph.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "engine_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine Version"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "model_license": {
+          "title": "Model License",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        },
+        "workflow": {
+          "title": "Workflow",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "model_license",
+        "sha256",
+        "width",
+        "height",
+        "workflow"
+      ],
+      "title": "DepthRecord",
+      "type": "object"
+    },
     "Expansion": {
       "description": "How Ollama expanded the prompt: enough to know which system prompt was used.",
       "properties": {
@@ -154,6 +214,17 @@
         "darkroom_version": {
           "title": "Darkroom Version",
           "type": "string"
+        },
+        "depth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DepthRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "guard": {
           "$ref": "#/$defs/GuardRecord"
