@@ -20,15 +20,19 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
 1. **Assemble** the final prompt: your text (or its Ollama expansion), then the LoRA trigger words.
 2. **Pre-flight**: SingGuard reads the final prompt and the negative prompt, framed together, under every selected
    policy. An illegal rule refuses. A failed check refuses. Nothing has been rendered yet.
-3. **Render** through ComfyUI. The image comes back over the websocket and is held in memory only.
-4. **Scan**: per policy, SingGuard judges the image alone and with the prompt. NudeNet scores exposure. If the age check
+3. **Input scan** (image-to-image and inpainting only): the input image gets the same checks as an output (step 5),
+   before anything reaches ComfyUI. It goes on only if its outcome is `passed`; anything else, a check that could not
+   run included, refuses the attempt with `outcome_reason` `input image: <reason>`. The input is never written to disk.
+   An inpainting mask is not scanned: it only selects which pixels are repainted (see [Inpainting](#inpainting)).
+4. **Render** through ComfyUI. The image comes back over the websocket and is held in memory only.
+5. **Scan**: per policy, SingGuard judges the image alone and with the prompt. NudeNet scores exposure. If the age check
    is installed, MiVOLO estimates an age per face.
-5. **Decide and release or destroy.** `passed` and `review` images are written to the output root. `deleted` and
+6. **Decide and release or destroy.** `passed` and `review` images are written to the output root. `deleted` and
    `omitted` images are never written.
 
 | Outcome | Means |
 |---|---|
-| `refused` | pre-flight stopped it; nothing was rendered |
+| `refused` | pre-flight, or the input image's scan, stopped it; nothing was rendered |
 | `passed` | every cell safe |
 | `review` | some cell flagged; the image is kept and served behind its shield |
 | `deleted` | an illegal rule in any policy, `minor-exposed`, or an enforcing check that could not run |
@@ -45,7 +49,8 @@ under-18 estimate with exposure deletes the image. The age check is an extra sig
 
 You need the services darkroom reaches by URL:
 
-- **ComfyUI**, with the `SaveImageWebsocket` node (below).
+- **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image and inpainting the `DarkroomLoadImageBase64`
+  and `DarkroomLoadMaskBase64` nodes (below).
 - **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and an empty
   `ARGUS_DARKROOM_SINGGUARD_URL` makes it refuse to start.
 - **NudeNet**. Without it, SFW generation is unavailable (HTTP 400) because every SFW output would be omitted.
@@ -89,21 +94,57 @@ curl -s localhost:8188/object_info/SaveImageWebsocket | head -c 200
 
 An empty `{}` means the node is not installed. The node does not write to disk, which is why darkroom can use it.
 
+### ComfyUI: the `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64` nodes (image-to-image, inpainting)
+
+ComfyUI's stock `LoadImage` reads from its `input/` folder, so the caller's image would have to be written there and
+would stay behind. Darkroom instead sends the input inside the prompt graph, as base64, to a small node vendored in this
+repo: [`comfyui/darkroom_load_image_base64.py`](comfyui/darkroom_load_image_base64.py). `DarkroomLoadImageBase64`
+decodes the image in memory and outputs an `IMAGE`; `DarkroomLoadMaskBase64`, in the same file, does the same for an
+inpainting mask and outputs a `MASK` (1.0 where the image is repainted). Neither reads or writes a file, and neither is
+an output node. The graph, and the input and mask in it, is deleted from ComfyUI's history after every run, like the
+prompt. Install the file only if you use image-to-image or inpainting (if you installed it for image-to-image, copy it
+again: the mask node is new):
+
+```bash
+cp comfyui/darkroom_load_image_base64.py /path/to/ComfyUI/custom_nodes/
+# restart ComfyUI, then:
+curl -s localhost:8188/object_info/DarkroomLoadImageBase64 | head -c 200
+curl -s localhost:8188/object_info/DarkroomLoadMaskBase64 | head -c 200
+```
+
+An empty `{}` means ComfyUI has not loaded it; an image-to-image or inpainting run then fails (`failed`) after its
+input scan.
+
 ### Workflow templates
 
 A template is a ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, `$positive`, `$negative`,
 `$seed`, `$steps`, `$cfg`, `$guidance`, `$sampler`, `$scheduler`, `$width`, `$height`, `$clip_skip`, and `$lora` /
 `$lora_weight`, `$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no
-other node that saves, and a `$positive` slot.
+other node that saves, and a `$positive` slot. No node may load an image (`LoadImage` and the like): an image reaches a
+run only as an image-to-image input, which darkroom checks first.
+
+An **image-to-image** template has `$init_image`, as the `image` of exactly one `DarkroomLoadImageBase64` node, and
+`$denoise`; a text-to-image template has neither. The examples feed the loader through `ImageScale` (lanczos, to
+`$width` x `$height`, cropped to the centre) and `VAEEncode` into the `KSampler`, whose `denoise` is `$denoise`.
+
+An **inpainting** template has those and `$init_mask`, as the `mask` of exactly one `DarkroomLoadMaskBase64` node;
+no other template may contain that node. The examples scale the mask as they scale the image (`MaskToImage`,
+`ImageScale` nearest-exact with the same size and crop, `ImageToMask` red), grow it by 8 pixels (`GrowMask`, tapered
+corners), give it to the sampler with `SetLatentNoiseMask` on the encoded input, and finish with
+`ImageCompositeMasked`: the decoded result over the scaled input, through the grown mask, so every pixel outside it is
+exactly the input's.
 
 `WORKFLOW` names a file or a directory:
 
-- **A directory** holds one template per checkpoint family and LoRA count, named `<family>.json` (no LoRA slots) or
-  `<family>+lora<N>.json` (exactly N). A checkpoint's family is its top-level folder under `checkpoints/`, so
-  `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
-  checkpoint outside a family folder, the request is a 400. Darkroom never falls back to another family's template or
-  LoRA count. A misnamed or broken file stops the server from starting.
-- **A file** is used for every checkpoint, as before. Every run must then fill its LoRA slots exactly.
+- **A directory** holds one template per checkpoint family, LoRA count and mode, named `<family>.json` (no LoRA slots)
+  or `<family>+lora<N>.json` (exactly N), with `+img2img` at the end for an image-to-image template
+  (`sdxl+lora1+img2img.json`) or `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`). A checkpoint's
+  family is its top-level folder under `checkpoints/`, so `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
+  checkpoint outside a family folder, an input image with no `+img2img` template or a mask with no `+inpaint` one, the
+  request is a 400. Darkroom never falls back to another family's template, LoRA count or mode. A misnamed or broken
+  file, or one whose name and `$init_image` / `$init_mask` slots disagree, stops the server from starting.
+- **A file** is used for every checkpoint, as before. Every run must then fill its LoRA slots exactly, and be of the
+  file's mode: text-to-image, image-to-image or inpainting.
 
 A template never silently drops a value the request sets. A request is a 400 if it sets something the chosen template
 has no slot for: a negative prompt (Flux takes none), `guidance`, or a `clip_skip` above 2. `/models` lists each
@@ -114,7 +155,7 @@ none). Records name the template in `request.workflow`, beside `workflow_sha256`
 
 | Family | Files | Sampling |
 |---|---|---|
-| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
 | `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
 | `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
 | `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |
@@ -159,15 +200,34 @@ warns on non-illegal flags and blurs exposed output, and illegal content is refu
 
 ```bash
 argus-darkroom preflight "a cat on a sofa" -n "blurry"
-argus-darkroom generate "a cat on a sofa" --checkpoint base.safetensors \
+argus-darkroom generate "a cat on a sofa" --checkpoint sdxl/base.safetensors \
     --sampler euler --scheduler normal --steps 20 --cfg 5 --width 1024 --height 1024 \
     --lora style.safetensors:0.8 --trigger sks --expand
+argus-darkroom generate "a lighthouse at dusk" --checkpoint flux/flux1-dev-fp8.safetensors \
+    --sampler euler --scheduler simple --steps 20 --cfg 1 --guidance 3.5 --width 1024 --height 1024
 argus-darkroom serve
 argus-darkroom schema --check
+argus-darkroom version
 ```
 
-`generate` exits `0` for a released image (`passed` or `review`), `2` for anything else, and `1` for a usage or
-configuration error. Sampling options are required: darkroom does not invent them.
+| Command | Options |
+|---|---|
+| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--json` (print the whole record instead of a summary) |
+| `preflight PROMPT` | The text check alone: `--negative`/`-n`, `--policy`, `--advisory`, `--thinking`, `--trigger-word` (repeatable). Prints the verdicts as JSON |
+| `serve` | `--port`/`-p` (default 8106), `--host` (default `127.0.0.1`), `--output-root`, `--allow-nsfw`, `--cors-origin` (repeatable). Each overrides its `ARGUS_DARKROOM_*` variable |
+| `schema` | Writes `schema/darkroom-wire.schema.json`, or `--output`/`-o` somewhere else. `--check` exits 1 when the committed file is stale |
+| `version` | Prints the version |
+
+The CLI renders text-to-image only. Image-to-image and inpainting (`init_image`, `mask`) are reached over HTTP.
+
+Exit codes for `generate` and `preflight`:
+
+- **`0`:** `generate` released the image (`passed` or `review`), or `preflight`'s verdict was not `refused`.
+- **`2`:** anything else (refused, deleted, omitted or failed), **and** a missing or malformed option, which the
+  argument parser rejects with the same code. A script that needs to tell these apart should pass `--json` and read
+  `outcome`, or look for `Usage:` on stderr.
+- **`1`:** a configuration error, such as no `SINGGUARD_URL` or a workflow that cannot load, or a request darkroom
+  refuses before running it, such as an unknown policy or a checkpoint with no workflow.
 
 `--expand` has Ollama rewrite the prompt. The expansion replaces your text (trigger words are appended) and is checked
 like anything else, so it cannot route around the gate. If Ollama fails, the attempt is a `failed` record, never a
@@ -178,10 +238,10 @@ silent fall back to the unexpanded prompt.
 | | |
 |---|---|
 | `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `workflows` (names) |
-| `GET /policies` | each policy's name, modes, `enforceable` flag and rule names (`A`, `B`, ...) |
-| `GET /models` | checkpoints as `{name, family, lora_counts}`, LoRAs as `{name}`, `workflows` as `{name, family, loras, slots}`, `default_checkpoint`, plus the samplers and schedulers ComfyUI offers |
-| `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false` |
-| `POST /generate/stream` | SSE: `preflight`, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
+| `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
+| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
+| `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image; the record stays |
@@ -190,6 +250,30 @@ silent fall back to the unexpanded prompt.
 | `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
+
+The generate and pre-flight body: `user_prompt`, `negative_prompt`, `expand`, `seed`, `sampling`, `checkpoint`, `vae`,
+`loras` (`{name, weight, trigger_words}`), `enforcing_policy`, `advisory_policies`, `thinking`, `nsfw_threshold`, and
+`init_image` for image-to-image:
+
+| `init_image` field | |
+|---|---|
+| `data_base64` | PNG, JPEG or WebP bytes, base64. At most 16 MiB decoded and 4096 px on either edge. Anything else is a 400 |
+| `denoise` | 0.05 to 1.0, default 0.5: how much of the input the sampler replaces. Out of range is a 422, like any other field |
+| `mask_base64` | optional; makes the run inpainting. PNG, JPEG or WebP bytes, base64, with the image's limits, and exactly the input's size once both are upright. White (grey 128 and up) is repainted, black kept. A mask that does not decode, is the wrong size or masks nothing is a 400 |
+
+The input is decoded once, turned upright by its EXIF orientation, made RGB and re-encoded as a PNG with no metadata;
+that PNG is what is scanned and what ComfyUI gets. Darkroom does not store it: the record keeps
+`request.init_image` (`sha256`, `phash`, `width`, `height` of that PNG, `source_sha256` of the bytes sent, `denoise`)
+and `guard.input` (the input's `scans`, `nudenet`, `age`, `outcome` and `reason`).
+
+### Inpainting
+
+With `mask_base64`, only the mask's white region of the input is repainted; every other pixel of the output is the
+input's (scaled to the output size). The input is judged exactly as for image-to-image. The mask is not scanned: it is a
+region selector with no imagery of its own, and what could be harmful (the input it selects from, and the output) is
+judged in full either way. It is cut at 128 into a 1-bit PNG with no metadata, sent to ComfyUI inside the graph like the
+input, and never stored. The record keeps `request.init_image.mask` (`sha256` of that PNG, `source_sha256` of the bytes
+sent, `masked_fraction`: the share of the input it repaints, to 4 decimals).
 
 Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`);
 `blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet could not be reached, and the

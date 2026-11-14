@@ -237,6 +237,17 @@
           "title": "Enforcing Policy",
           "type": "string"
         },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputScanRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "nudenet": {
           "anyOf": [
             {
@@ -381,6 +392,118 @@
       "title": "ImageRecord",
       "type": "object"
     },
+    "InitImageRef": {
+      "description": "The identity of an image-to-image input, never its pixels: the caller keeps its own input.\n\nThe hashes and size are of the image as darkroom judged it and sent it to ComfyUI: decoded, turned upright, made\nRGB and re-encoded as a PNG with no metadata. ``source_sha256`` is of the bytes the caller sent.",
+      "properties": {
+        "denoise": {
+          "title": "Denoise",
+          "type": "number"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "mask": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MaskRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "phash": {
+          "title": "Phash",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "phash",
+        "width",
+        "height",
+        "source_sha256",
+        "denoise"
+      ],
+      "title": "InitImageRef",
+      "type": "object"
+    },
+    "InputScanRecord": {
+      "description": "The image-to-image input's own scan: the same checks an output gets, before anything reaches ComfyUI.\n\nThe input goes on only when ``outcome`` is ``passed``; anything else refuses the attempt. ``outcome`` and\n``reason`` are what the outcome table said of the input, as if it were an output.",
+      "properties": {
+        "age": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgeRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "nudenet": {
+          "$ref": "#/$defs/NudeNetRecord"
+        },
+        "outcome": {
+          "enum": [
+            "refused",
+            "passed",
+            "review",
+            "deleted",
+            "omitted",
+            "failed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "scans": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ScanCells"
+          },
+          "title": "Scans",
+          "type": "object"
+        }
+      },
+      "required": [
+        "nudenet",
+        "outcome"
+      ],
+      "title": "InputScanRecord",
+      "type": "object"
+    },
     "LoRARef": {
       "properties": {
         "name": {
@@ -411,6 +534,36 @@
         "sha256"
       ],
       "title": "LoRARef",
+      "type": "object"
+    },
+    "MaskRef": {
+      "description": "The identity of an inpainting mask, never its pixels. The mask selects the region of the input that is\nrepainted; it carries no imagery, so it is not scanned.\n\n``sha256`` is of the mask as ComfyUI got it: turned upright, cut into black and white at 128 and re-encoded as a\n1-bit PNG with no metadata. ``source_sha256`` is of the bytes the caller sent.",
+      "properties": {
+        "masked_fraction": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Masked Fraction",
+          "type": "number"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sha256",
+        "source_sha256",
+        "masked_fraction"
+      ],
+      "title": "MaskRef",
       "type": "object"
     },
     "ModelRef": {
@@ -530,6 +683,17 @@
         "final_prompt": {
           "title": "Final Prompt",
           "type": "string"
+        },
+        "init_image": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InitImageRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "loras": {
           "items": {

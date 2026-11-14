@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-14
+
+### Added
+
+- **Image-to-image.** A request may carry `init_image` (`data_base64`: PNG, JPEG or WebP, at most 16 MiB and 4096 px
+  per edge; `denoise`: 0.05 to 1.0, default 0.5). The input gets the same checks as an output (SingGuard isolated and
+  with the prompt under every policy, NudeNet, the age estimate) after the text pre-flight and before anything reaches
+  ComfyUI, and goes on only if its outcome is `passed`. Anything else refuses the attempt (`refused`,
+  `outcome_reason` `input image: <reason>`, `critical` as for an output). The SSE stream carries one `input_scan`
+  event per input cell.
+- The input is never written to disk: it travels to ComfyUI as base64 inside the graph, read by a vendored custom node,
+  `comfyui/darkroom_load_image_base64.py` (`DarkroomLoadImageBase64`), and the graph is deleted from ComfyUI's history
+  after the run. Darkroom keeps only its hashes: `request.init_image` and `guard.input` in the record (new optional
+  fields; `record_version` stays 1.0).
+- Image-to-image templates, named `<family>[+lora<N>]+img2img.json`, with `$init_image` and `$denoise`. Examples
+  `sdxl+img2img` and `sdxl+lora1+img2img`. `/models` gives each checkpoint's `img2img_lora_counts` and each
+  workflow's `img2img` flag.
+
+- **Inpainting.** `init_image` may carry `mask_base64` (PNG, JPEG or WebP, the image's limits, exactly the input's
+  size once upright; white repaints, black keeps). Only the masked region is repainted; the example templates composite
+  the result over the scaled input, so every pixel outside the (8 px grown) mask is the input's. The input is judged
+  exactly as for image-to-image. The mask is a region selector with no imagery, so it is not scanned; it is cut at 128
+  into a 1-bit PNG, sent inside the graph like the input, and never written. A mask that does not decode, is the wrong
+  size or masks nothing is a 400. Records gain `request.init_image.mask` (`sha256`, `source_sha256`,
+  `masked_fraction`; additive, `record_version` stays 1.0).
+- `DarkroomLoadMaskBase64`, in the same vendored file as `DarkroomLoadImageBase64`: copy the file into ComfyUI's
+  `custom_nodes/` again and restart ComfyUI.
+- Inpainting templates, named `<family>[+lora<N>]+inpaint.json`, with `$init_image`, `$init_mask` and `$denoise`;
+  examples `sdxl+inpaint` and `sdxl+lora1+inpaint`. A mask with no inpainting template is a 400. `/models` gives each
+  checkpoint's `inpaint_lora_counts` and each workflow's `mode` (`txt2img`, `img2img`, `inpaint`).
+
+### Changed
+
+- A workflow's `img2img` flag in `/models` is true for plain image-to-image only, not for inpainting.
+  `WorkflowSet.select` and `lora_counts` take a `mode` instead of an `img2img` flag.
+- A template with a node that loads an image from ComfyUI's disk (`LoadImage` and the like) is refused at load: an
+  image reaches a run only as a checked input.
+- **argus-cortex `>=0.4.6,<0.6`** (was `<0.5`). The Docker image and a plain `pip install argus-darkroom[server,cli]` get
+  cortex 0.5. The `[age]` and `[dev]` extras stay on 0.4.x while argus-curator caps cortex below 0.5. darkroom uses
+  nothing 0.5 changed, and the tests and `make smoke` pass on both 0.4.7 and 0.5.0.
+- **Docs:** the README lists every CLI option and the real exit codes (a malformed option also exits 2), and gives the
+  full `/policies` and `/models` shapes (#45).
+
+### Fixed
+
+- The ComfyUI websocket no longer sends keepalive pings. ComfyUI answers them on its event loop, which can stall for
+  minutes while a large checkpoint loads under memory pressure, so a 20 s ping timeout failed SD3.5 runs that ComfyUI
+  went on to finish (`ComfyUI websocket failed: sent 1011 (internal error) keepalive ping timeout`). The render
+  deadline (600 s) still bounds a hung ComfyUI.
+
 ## [0.1.3] - 2026-11-09
 
 ### Added

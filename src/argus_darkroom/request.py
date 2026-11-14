@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from argus_darkroom.models import SamplingParams
 
 MAX_CLIP_SKIP = 12  # CLIP-L's layers
+MIN_DENOISE = 0.05  # below this the output would be little more than the input
 
 
 class RequestError(ValueError):
@@ -23,6 +24,32 @@ class LoRASpec(BaseModel):
     name: str
     weight: float = 1.0
     trigger_words: list[str] = Field(default_factory=list)
+
+
+class InitImage(BaseModel):
+    """An image-to-image input. It gets the same image checks as an output before anything reaches ComfyUI, and it
+    is never written to disk: it travels to ComfyUI inside the graph, which is deleted from ComfyUI's history after
+    the run. darkroom does not store it; the record keeps its hashes and size.
+
+    With a mask it is inpainting: only the mask's white region is repainted, and every other pixel of the output is
+    the input's. The mask selects a region and carries no imagery, so it is not scanned; it travels and is forgotten
+    like the input."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # PNG, JPEG or WebP bytes, base64. Checked when the request is prepared (HTTP 400): see ``images.load_input``.
+    data_base64: str = Field(min_length=1)
+    # How much of the input the sampler replaces: near 0 keeps it, 1 ignores it.
+    denoise: float = Field(default=0.5, ge=MIN_DENOISE, le=1.0)
+    # Inpainting: PNG, JPEG or WebP bytes, base64, the input's size once upright; white repaints, black keeps.
+    # Checked when the request is prepared (HTTP 400): see ``images.load_mask``. None: plain image-to-image.
+    mask_base64: str | None = Field(default=None, min_length=1)
+
+    def __repr__(self) -> str:  # never the pixels, in a log or a traceback
+        mask = "" if self.mask_base64 is None else f", mask=<{len(self.mask_base64)} base64 chars>"
+        return f"InitImage(<{len(self.data_base64)} base64 chars>, denoise={self.denoise}{mask})"
+
+    __str__ = __repr__
 
 
 class GenerateRequest(BaseModel):
@@ -42,6 +69,8 @@ class GenerateRequest(BaseModel):
     advisory_policies: list[str] = Field(default_factory=list)
     thinking: str | None = None
     nsfw_threshold: float = Field(default=0.2, ge=0.0, le=1.0)
+    # Image-to-image. None: text-to-image.
+    init_image: InitImage | None = None
 
     @field_validator("user_prompt")
     @classmethod

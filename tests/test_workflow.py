@@ -44,11 +44,13 @@ def test_the_shipped_examples_load(name) -> None:
 
 
 def test_the_shipped_examples_load_as_a_set_keyed_by_family_and_lora_count() -> None:
-    found = {(w.name, w.family, w.lora_slots) for w in load_workflows(EXAMPLES).workflows}
+    found = {(w.name, w.family, w.lora_slots, w.mode) for w in load_workflows(EXAMPLES).workflows}
     assert found == {
-        ("sdxl", "sdxl", 0), ("sdxl+lora1", "sdxl", 1), ("sdxl+lora2", "sdxl", 2),
-        ("flux", "flux", 0), ("flux+lora1", "flux", 1), ("flux+lora2", "flux", 2),
-        ("flux-klein", "flux-klein", 0), ("sd35", "sd35", 0),
+        ("sdxl", "sdxl", 0, "txt2img"), ("sdxl+lora1", "sdxl", 1, "txt2img"), ("sdxl+lora2", "sdxl", 2, "txt2img"),
+        ("sdxl+img2img", "sdxl", 0, "img2img"), ("sdxl+lora1+img2img", "sdxl", 1, "img2img"),
+        ("sdxl+inpaint", "sdxl", 0, "inpaint"), ("sdxl+lora1+inpaint", "sdxl", 1, "inpaint"),
+        ("flux", "flux", 0, "txt2img"), ("flux+lora1", "flux", 1, "txt2img"), ("flux+lora2", "flux", 2, "txt2img"),
+        ("flux-klein", "flux-klein", 0, "txt2img"), ("sd35", "sd35", 0, "txt2img"),
     }  # fmt: skip
 
 
@@ -240,6 +242,8 @@ def test_a_template_knows_its_lora_slots_and_scalar_slots() -> None:
         "name": "sdxl+lora2",
         "family": None,
         "loras": 2,
+        "mode": "txt2img",
+        "img2img": False,
         "slots": [
             "$base_checkpoint", "$cfg", "$clip_skip", "$height", "$negative", "$positive", "$sampler", "$scheduler",
             "$seed", "$steps", "$width",
@@ -314,7 +318,9 @@ def write_set(tmp_path, **files: dict) -> object:
     return tmp_path
 
 
-@pytest.mark.parametrize("name", ["sdxl+lora", "sdxl+lora0", "sdxl+foo", "+lora1", "sdxl+lora1+lora2"])
+@pytest.mark.parametrize(
+    "name", ["sdxl+lora", "sdxl+lora0", "sdxl+foo", "+lora1", "sdxl+lora1+lora2", "sdxl+img2img+lora1", "sdxl+i2i"]
+)
 def test_a_misnamed_member_refuses_the_set(tmp_path, name) -> None:
     with pytest.raises(WorkflowError, match="named <family>.json"):
         load_workflows(write_set(tmp_path, sdxl=graph(), **{name: graph()}))
@@ -378,3 +384,267 @@ def test_clip_skip_without_a_slot_is_refused_only_when_it_would_change_something
     else:
         with pytest.raises(WorkflowError, match="no \\$clip_skip slot"):
             run()
+
+
+# --- image-to-image ------------------------------------------------------------------------------------
+
+
+def img2img(name: str = "sdxl+img2img.json") -> dict:
+    return json.loads((EXAMPLES / name).read_text())
+
+
+def test_the_img2img_examples_load_the_input_through_the_base64_loader() -> None:
+    wf = load_workflow(EXAMPLES / "sdxl+lora1+img2img.json")
+    assert wf.img2img and wf.lora_slots == 1 and {"$init_image", "$denoise"} <= wf.slots
+    assert wf.describe()["img2img"] is True
+    assert not load_workflow(EXAMPLES / "sdxl+lora1.json").img2img
+    assert not writes_to_disk("DarkroomLoadImageBase64")
+
+
+def test_the_img2img_examples_differ_from_their_text_to_image_ones_only_in_the_latent() -> None:
+    for txt2img, i2i in [("sdxl.json", "sdxl+img2img.json"), ("sdxl+lora1.json", "sdxl+lora1+img2img.json")]:
+        a, b = json.loads((EXAMPLES / txt2img).read_text()), img2img(i2i)
+        assert set(a) - set(b) == {"5"} and set(b) - set(a) == {"12", "13", "14"}
+        a3, b3 = a.pop("3"), b.pop("3")
+        assert {k: v for k, v in a3["inputs"].items() if k not in ("denoise", "latent_image")} == {
+            k: v for k, v in b3["inputs"].items() if k not in ("denoise", "latent_image")
+        }
+        assert (b3["inputs"]["denoise"], b3["inputs"]["latent_image"]) == ("$denoise", ["14", 0])
+        assert {k: v for k, v in a.items() if k != "5"} == {k: v for k, v in b.items() if k not in ("12", "13", "14")}
+
+
+def test_render_fills_the_input_and_the_denoise() -> None:
+    wf = load_workflow(EXAMPLES / "sdxl+img2img.json")
+    out = render(wf, params(init_image="aW1hZ2U=", denoise=0.3))
+    assert out["12"] == {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "aW1hZ2U="}}
+    assert out["3"]["inputs"]["denoise"] == 0.3
+    assert out["13"]["inputs"]["width"] == 512 and out["13"]["inputs"]["height"] == 768
+    with pytest.raises(WorkflowError, match="but this run has no value"):
+        render(wf, params())
+
+
+def test_an_input_the_template_has_no_slot_for_is_refused() -> None:
+    with pytest.raises(WorkflowError, match="no \\$init_image slot"):
+        render(parse_workflow(graph()), params(init_image="aW1hZ2U="))
+    with pytest.raises(WorkflowError, match="no \\$denoise slot"):
+        render(parse_workflow(graph()), params(denoise=0.3))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda g: g.update({"20": {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "x"}}}),
+         "exactly one DarkroomLoadImageBase64"),
+        (lambda g: g["3"]["inputs"].update({"denoise": 1.0}), "no \\$denoise slot"),
+        (lambda g: g["13"]["inputs"].update({"crop": "$init_image"}), "must appear once"),
+        (lambda g: g["12"]["inputs"].update({"image": "a fixed picture"}), "needs \\$init_image as its image"),
+    ],
+)  # fmt: skip
+def test_unsound_input_slots_are_refused_at_load(change, message) -> None:
+    template = img2img()
+    change(template)
+    with pytest.raises(WorkflowError, match=message):
+        parse_workflow(template)
+
+
+def test_a_denoise_slot_without_an_input_is_refused() -> None:
+    template = graph()
+    template["3"]["inputs"]["denoise"] = "$denoise"
+    with pytest.raises(WorkflowError, match="no \\$init_image: it is not image-to-image"):
+        parse_workflow(template)
+
+
+@pytest.mark.parametrize(
+    "class_type",
+    [
+        "LoadImage",
+        "LoadImageMask",
+        "LoadImageOutput",
+        "VHS_LoadImages",
+        "Load_Image",
+        "LoadLatent",
+        "LoadVideo",
+        "VHS_LoadVideo",
+        "Load Image Batch",
+        "Image Load",
+        "Load-Image",
+    ],
+)
+def test_a_node_that_loads_an_unchecked_image_is_refused_at_load(class_type) -> None:
+    with pytest.raises(WorkflowError, match="loads an image darkroom never checked"):
+        parse_workflow(graph(**{"20": {"class_type": class_type, "inputs": {"image": "x.png"}}}))
+
+
+def test_a_name_that_disagrees_with_the_input_slot_refuses_the_set(tmp_path) -> None:
+    with pytest.raises(WorkflowError, match="has \\$init_image and no \\$init_mask but its name says neither"):
+        load_workflows(write_set(tmp_path, sdxl=img2img()))
+
+
+def test_an_img2img_name_without_the_input_slot_refuses_the_set(tmp_path) -> None:
+    with pytest.raises(WorkflowError, match="has no \\$init_image but its name says image-to-image"):
+        load_workflows(write_set(tmp_path, **{"sdxl+img2img": graph()}))
+
+
+@pytest.mark.parametrize(
+    ("loras", "mode", "name"),
+    [
+        (0, "txt2img", "sdxl"), (0, "img2img", "sdxl+img2img"), (0, "inpaint", "sdxl+inpaint"),
+        (1, "txt2img", "sdxl+lora1"), (1, "img2img", "sdxl+lora1+img2img"), (1, "inpaint", "sdxl+lora1+inpaint"),
+    ],
+)  # fmt: skip
+def test_select_picks_the_template_for_the_mode(loras, mode, name) -> None:
+    assert load_workflows(EXAMPLES).select("sdxl/a.safetensors", loras, mode).name == name
+
+
+def test_no_text_to_image_substitute_for_an_image_to_image_run() -> None:
+    workflows = load_workflows(EXAMPLES)
+    assert workflows.lora_counts("sdxl/a.safetensors", "img2img") == [0, 1]
+    assert workflows.lora_counts("flux/f.safetensors", "img2img") == []
+    with pytest.raises(WorkflowError, match="no image-to-image workflow renders the 'sdxl' family with 2 LoRA.*0, 1"):
+        workflows.select("sdxl/a.safetensors", 2, "img2img")
+    with pytest.raises(WorkflowError, match="no image-to-image workflow renders the 'flux'.*no image-to-image"):
+        workflows.select("flux/f.safetensors", 0, "img2img")
+
+
+def test_a_single_img2img_file_serves_only_image_to_image_runs() -> None:
+    one = load_workflows(EXAMPLES / "sdxl+img2img.json")
+    assert one.select("a.safetensors", 0, "img2img").img2img
+    with pytest.raises(WorkflowError, match="no workflow renders this checkpoint"):
+        one.select("a.safetensors", 0)
+
+
+# --- inpainting --------------------------------------------------------------------------------------------
+
+
+def inpaint(name: str = "sdxl+inpaint.json") -> dict:
+    return json.loads((EXAMPLES / name).read_text())
+
+
+def test_the_inpaint_examples_load_the_mask_through_its_own_loader() -> None:
+    wf = load_workflow(EXAMPLES / "sdxl+lora1+inpaint.json")
+    assert wf.mode == "inpaint" and not wf.img2img and wf.lora_slots == 1
+    assert {"$init_image", "$init_mask", "$denoise"} <= wf.slots
+    assert wf.describe()["mode"] == "inpaint" and wf.describe()["img2img"] is False
+    assert load_workflow(EXAMPLES / "sdxl+lora1+img2img.json").mode == "img2img"
+    assert load_workflow(EXAMPLES / "sdxl+lora1.json").mode == "txt2img"
+    assert not writes_to_disk("DarkroomLoadMaskBase64")
+
+
+def test_the_inpaint_examples_extend_their_img2img_ones_with_a_mask_and_a_composite() -> None:
+    for i2i, inp in [
+        ("sdxl+img2img.json", "sdxl+inpaint.json"),
+        ("sdxl+lora1+img2img.json", "sdxl+lora1+inpaint.json"),
+    ]:
+        a, b = img2img(i2i), inpaint(inp)
+        assert set(a) - set(b) == set() and set(b) - set(a) == {"15", "16", "17", "18", "19", "20", "21"}
+        assert b["15"] == {"class_type": "DarkroomLoadMaskBase64", "inputs": {"mask": "$init_mask"}}
+        assert b["16"]["class_type"] == "MaskToImage" and b["16"]["inputs"]["mask"] == ["15", 0]
+        # The mask is scaled and cropped exactly as the image is, so the two line up.
+        assert b["17"]["class_type"] == "ImageScale" and b["17"]["inputs"]["image"] == ["16", 0]
+        assert {k: v for k, v in b["17"]["inputs"].items() if k not in ("image", "upscale_method")} == {
+            k: v for k, v in b["13"]["inputs"].items() if k not in ("image", "upscale_method")
+        }
+        assert b["18"] == {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}}
+        assert b["19"]["class_type"] == "GrowMask" and b["19"]["inputs"]["mask"] == ["18", 0]
+        assert b["20"] == {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["14", 0], "mask": ["19", 0]}}
+        assert b["3"]["inputs"]["latent_image"] == ["20", 0] and b["3"]["inputs"]["denoise"] == "$denoise"
+        # The composite keeps every pixel outside the mask: the scaled input is the destination.
+        assert b["21"] == {
+            "class_type": "ImageCompositeMasked",
+            "inputs": {
+                "destination": ["13", 0], "source": ["8", 0], "x": 0, "y": 0, "resize_source": False,
+                "mask": ["19", 0],
+            },
+        }  # fmt: skip
+        assert b["9"]["inputs"]["images"] == ["21", 0]
+        rest = set(a) - {"3", "9"}
+        assert {k: a[k] for k in rest} == {k: b[k] for k in rest}
+
+
+def test_render_fills_the_input_the_mask_and_the_denoise() -> None:
+    wf = load_workflow(EXAMPLES / "sdxl+inpaint.json")
+    out = render(wf, params(init_image="aW1hZ2U=", init_mask="bWFzaw==", denoise=0.9))
+    assert out["12"]["inputs"]["image"] == "aW1hZ2U=" and out["15"]["inputs"]["mask"] == "bWFzaw=="
+    assert out["3"]["inputs"]["denoise"] == 0.9
+    assert (out["17"]["inputs"]["width"], out["17"]["inputs"]["height"]) == (512, 768)
+    with pytest.raises(WorkflowError, match="\\$init_mask but this run has no value"):
+        render(wf, params(init_image="aW1hZ2U=", denoise=0.9))
+    assert "bWFzaw==" not in repr(params(init_mask="bWFzaw=="))
+
+
+def test_a_mask_the_template_has_no_slot_for_is_refused() -> None:
+    with pytest.raises(WorkflowError, match="no \\$init_mask slot"):
+        render(load_workflow(EXAMPLES / "sdxl+img2img.json"), params(init_image="aW1h", init_mask="bWFz", denoise=0.5))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (lambda g: g.update({"30": {"class_type": "DarkroomLoadMaskBase64", "inputs": {"mask": "x"}}}),
+         "exactly one DarkroomLoadMaskBase64"),
+        (lambda g: g["19"]["inputs"].update({"expand": "$init_mask"}), "must appear once, as the mask"),
+        (lambda g: g["15"].update({"class_type": "SomeMaskNode"}), "exactly one DarkroomLoadMaskBase64 \\(found 0\\)"),
+        (lambda g: g["12"]["inputs"].update({"image": "a fixed picture"}), "a mask needs an input image"),
+        (lambda g: g["21"]["inputs"].update({"x": "$init_image"}), "\\$init_image must appear once"),
+        (lambda g: g["3"]["inputs"].update({"denoise": 1.0}), "no \\$denoise slot"),
+        (lambda g: g.update({"30": {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "x"}}}),
+         "exactly one DarkroomLoadImageBase64"),
+    ],
+)  # fmt: skip
+def test_unsound_mask_slots_are_refused_at_load(change, message) -> None:
+    template = inpaint()
+    change(template)
+    with pytest.raises(WorkflowError, match=message):
+        parse_workflow(template)
+
+
+def test_a_mask_without_an_input_image_is_refused() -> None:
+    template = graph(**{"15": {"class_type": "DarkroomLoadMaskBase64", "inputs": {"mask": "$init_mask"}}})
+    with pytest.raises(WorkflowError, match="no \\$init_image: a mask needs an input image"):
+        parse_workflow(template)
+
+
+@pytest.mark.parametrize("base", ["txt2img", "img2img"])
+def test_a_mask_loader_outside_an_inpaint_template_is_refused(base) -> None:
+    template = graph() if base == "txt2img" else img2img()
+    template["30"] = {"class_type": "DarkroomLoadMaskBase64", "inputs": {"mask": "a fixed mask"}}
+    with pytest.raises(WorkflowError, match="DarkroomLoadMaskBase64 node needs \\$init_mask as its mask"):
+        parse_workflow(template)
+
+
+@pytest.mark.parametrize(
+    ("name", "template", "message"),
+    [
+        ("sdxl", "inpaint", "has \\$init_mask but its name says neither"),
+        ("sdxl+img2img", "inpaint", "has \\$init_mask but its name says image-to-image"),
+        ("sdxl+inpaint", "img2img", "has \\$init_image and no \\$init_mask but its name says inpainting"),
+        ("sdxl+inpaint", "txt2img", "has no \\$init_image but its name says inpainting"),
+    ],
+)
+def test_a_name_that_disagrees_with_the_mode_refuses_the_set(tmp_path, name, template, message) -> None:
+    body = {"inpaint": inpaint, "img2img": img2img, "txt2img": graph}[template]()
+    with pytest.raises(WorkflowError, match=message):
+        load_workflows(write_set(tmp_path, **{name: body}))
+
+
+@pytest.mark.parametrize("name", ["sdxl+inpaint+img2img", "sdxl+img2img+inpaint", "sdxl+inpaint+lora1"])
+def test_a_misnamed_inpaint_member_refuses_the_set(tmp_path, name) -> None:
+    with pytest.raises(WorkflowError, match="named <family>.json"):
+        load_workflows(write_set(tmp_path, sdxl=graph(), **{name: inpaint()}))
+
+
+def test_no_substitute_for_an_inpaint_run() -> None:
+    workflows = load_workflows(EXAMPLES)
+    assert workflows.lora_counts("sdxl/a.safetensors", "inpaint") == [0, 1]
+    assert workflows.lora_counts("flux/f.safetensors", "inpaint") == []
+    with pytest.raises(WorkflowError, match="no inpainting workflow renders the 'sdxl' family with 2 LoRA.*0, 1"):
+        workflows.select("sdxl/a.safetensors", 2, "inpaint")
+    with pytest.raises(WorkflowError, match="no inpainting workflow renders the 'flux'.*no inpainting"):
+        workflows.select("flux/f.safetensors", 0, "inpaint")
+    one = load_workflows(EXAMPLES / "sdxl+inpaint.json")
+    assert one.select("a.safetensors", 0, "inpaint").mode == "inpaint"
+    for mode in ("txt2img", "img2img"):
+        with pytest.raises(WorkflowError):
+            one.select("a.safetensors", 0, mode)
+    with pytest.raises(WorkflowError, match="unknown mode"):
+        workflows.select("sdxl/a.safetensors", 0, "outpaint")

@@ -21,17 +21,39 @@ not be broken and where things are.
 - **The age is a tool's estimate.** Name it `age_estimate_years`, source `mivolo`. Never call it an age, and never send
   it to SingGuard as context.
 - **No real sexual, violent or illegal content** in the repo or tests. Drive the illegal path with a fake verdict.
+- **An input image is judged like an output, and goes on only on `passed`.** Image-to-image runs the same scans and
+  `decide` on the input after the text pre-flight and before anything reaches ComfyUI; any other outcome (review,
+  omitted, deleted, unchecked) refuses. The input is never written to disk: it travels as base64 inside the graph to
+  `DarkroomLoadImageBase64` (`comfyui/`), the history delete removes it, and the record keeps only its hashes. No
+  template may load an image any other way.
+- **An inpainting mask is never scanned and never written.** It is a region selector with no imagery: the input it
+  selects from gets its full pre-flight as above, and the output is judged as usual, so the mask is sent to no guard.
+  It is checked as a file only (decodes, the upright input's exact size, something masked; a 400 otherwise), travels as
+  base64 in the graph to `DarkroomLoadMaskBase64`, and the record keeps only its hashes and `masked_fraction`. Only an
+  `+inpaint` template may hold the mask loader, and a mask never falls back to an image-to-image template.
+
+## Argus suite
+<!-- argus-suite: keep this block; argus-ci checks for it -->
+This repo is part of the Argus suite. The suite map below lists every sibling and what it owns; check it before
+building something a sibling may already do. **On every release, update this repo's row and capabilities in
+argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
+
+@../argus-core/SUITE.md
+
+Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
 ## Layout
 
 | | |
 |---|---|
-| `engine.py` | `Engine`: `begin` validates, `_run` expands, pre-flights, renders, scans, decides, releases or destroys |
+| `engine.py` | `Engine`: `begin` validates, `_run` expands, pre-flights, scans an input image (`check_input`), renders, scans, decides, releases or destroys |
 | `outcome.py` | the outcome table (`decide`). Precedence: deleted, omitted (SFW), review, passed. Unit-test any change by cell combination |
 | `preflight.py`, `scan.py`, `guard.py` | the text check, the image scans, and the SingGuard wrapper that turns failures into `unchecked` |
 | `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
-| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family and LoRA count), model sha256s |
+| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and mode: `+img2img`, `+inpaint`), model sha256s |
+| `images.py` | an image's hashes (`describe`), `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent, and `load_mask`: the inpainting mask, checked against the input's size and cut into a 1-bit PNG |
+| `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk) |
 | `age.py` | curator over `AGE_URL` (`POST /faces?body=true`), or in-process `detect_faces` behind the `[age]` extra |
 | `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
 | `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
@@ -45,8 +67,8 @@ make install && make test && make lint
 uv run --no-sync argus-darkroom schema --check   # after any change to models.py: run `schema`, commit the file
 ```
 
-- `main` is releases, `dev` is work. Work in a worktree from `dev`, and open PRs into `dev`. CI runs on `main` only, so
-  run lint, tests and `schema --check` locally before every PR.
+- Work in a worktree from `origin/dev` and open PRs into `dev` (see Branches below). Run lint, tests and
+  `schema --check` locally before every PR; CI runs them again on the PR.
 - Use `docker compose`, not `docker-compose`.
 - The record is a wire contract (`record_version`). Adding a field is fine; renaming or removing one is a new version.
   The blur decision lives only in `guard.nudenet.blur`, which is recorded for every NSFW-policy image (`exposed_score`
@@ -58,3 +80,14 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
   them to mocking.
 - `scripts/preflight_eval.py` is run by hand against a real SingGuard that supports text-only checks (agent-composer
   PR #4). It is not a test.
+
+## Branches
+
+`dev` is the default branch and the base for every PR. Cut feature branches from `origin/dev` and bring them up to date
+by merging `origin/dev`, never `main`. Never push work to `main` or open a PR against it, except the release PR from
+`dev`: `main` must never be ahead of `dev`, with one exception. A release fast-forwards `main` to a `dev` commit that
+passed CI (`git push origin origin/dev:main`), then tags it. If `main` is protected, the release is a reviewed PR from
+`dev` into `main`, and merging it leaves a merge commit on `main` alone. That merge commit is the one exception to the
+rule: it leaves `main` one commit ahead of `dev` with an identical tree. Leave it there and don't merge `main` back into
+`dev`. Anything else on `main` that `dev` lacks is a mistake (`git diff origin/dev origin/main` must be empty). Once
+`main` carries such a commit it can't be fast-forwarded, so later releases are PRs too.
