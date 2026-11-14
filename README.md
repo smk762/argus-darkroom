@@ -337,8 +337,10 @@ rule places exposure:
   with no exposed detection box to place.
 
 Both ignore the user's NudeNet threshold. The record's `age.minor_exposed_rule` says which rule decided, and
-`age.people` keeps every person box with the face it was matched to (`face_index`); `/health` reports the rule as
-`minor_exposed`. A record written before the setting existed has neither field and was decided by `frame`.
+`age.people` keeps every person box with the face it was matched to (`face_index`), and `nudenet.detections` keeps
+NudeNet's boxes (label, score, box; never pixels), so an `overlap` decision can be recomputed from the record. A
+matched person that cannot be placed (a malformed box, an unknown face) is dropped from `people`, which under
+`overlap` fails closed. `/health` reports the rule as `minor_exposed`. A record written before the setting existed has neither field and was decided by `frame`.
 
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,

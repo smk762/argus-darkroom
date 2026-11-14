@@ -70,14 +70,21 @@ def test_no_pixels_in_the_schema_of_a_deleted_record() -> None:
 
 
 def test_a_record_from_before_the_overlap_rule_still_loads() -> None:
-    """``people`` and ``minor_exposed_rule`` are new: an older record has neither, and was decided by frame."""
+    """``people``, ``minor_exposed_rule`` and NudeNet ``detections`` are new: an older record has none of them."""
     data = record("deleted").model_dump(mode="json")
     data["guard"]["age"] = {
         "source": "mivolo",
         "faces": [{"age_estimate_years": 16.0, "bbox": [0, 0, 10, 10]}],
         "minor_exposed": True,
     }
+    data["guard"]["nudenet"] = {
+        "exposed_score": 0.9,
+        "labels": {"FEMALE_BREAST_EXPOSED": 0.9},
+        "threshold": 0.2,
+        "blur": True,
+    }
     loaded = GenerationRecord.model_validate(data)
+    assert loaded.guard.nudenet is not None and loaded.guard.nudenet.detections == []
     assert loaded.guard.age is not None
     assert loaded.guard.age.people == [] and loaded.guard.age.minor_exposed_rule == "frame"
     assert loaded.guard.age.minor_exposed

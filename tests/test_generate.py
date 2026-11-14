@@ -26,6 +26,7 @@ from rig import (  # noqa: F401
 from argus_darkroom.age import AgeUnavailable, CuratorAgeEstimator, HttpAgeEstimator
 from argus_darkroom.config import Settings
 from argus_darkroom.models import FaceAge, GenerationRecord
+from argus_darkroom.outcome import minor_exposed
 from argus_darkroom.prompt import frame
 from argus_darkroom.request import RequestError
 
@@ -386,6 +387,10 @@ def test_the_minor_rule_places_exposure_as_configured(rig, rule, outcome) -> Non
     assert record.guard.age.minor_exposed_rule == rule
     assert record.guard.age.minor_exposed is (outcome == "deleted")
     assert [p.face_index for p in record.guard.age.people] == [0, None]
+    # The record alone is enough to recompute the decision: NudeNet's boxes are kept, never pixels.
+    assert [(d.label, d.bbox) for d in record.guard.nudenet.detections] == [("FEMALE_BREAST_EXPOSED", (0, 0, 10, 10))]
+    nudenet = record.guard.nudenet
+    assert minor_exposed(record.guard.age, nudenet.exposed_score, nudenet.detections, rule) is (outcome == "deleted")
 
 
 def test_overlap_deletes_exposure_on_the_young_persons_box(rig) -> None:

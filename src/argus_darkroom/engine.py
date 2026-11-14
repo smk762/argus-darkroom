@@ -41,6 +41,7 @@ from argus_darkroom.models import (
     LoRARef,
     MaskRef,
     ModelRef,
+    NudeNetBox,
     NudeNetRecord,
     RequestRecord,
 )
@@ -438,6 +439,7 @@ class Engine:
         nudenet = NudeNetRecord(
             exposed_score=exposed,
             labels=scan.nsfw.labels if scan.nsfw is not None else {},
+            detections=[NudeNetBox(label=d.label, score=d.score, bbox=tuple(d.bbox)) for d in detections],
             threshold=request.nsfw_threshold,
             blur=decision.blur,
         )

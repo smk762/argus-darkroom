@@ -22,7 +22,10 @@ from argus_cortex.moderation import policies as policy_table
 from argus_cortex.moderation.nudenet import MIN_REPORTED_SCORE
 
 from argus_darkroom.guard import illegal_rules_fired, rule_codes
-from argus_darkroom.models import AgeRecord, Cell, FaceAge, MinorExposedRule, Mode, Outcome, PersonAge, ScanCells
+from argus_darkroom.models import AgeRecord, Cell, MinorExposedRule, Mode, NudeNetBox, Outcome, PersonAge, ScanCells
+
+# A NudeNet detection as cortex returns it, or as the record keeps it: either has label, score and bbox.
+Detection = NsfwDetection | NudeNetBox
 
 # NudeNet's reporting floor on the five default exposed classes. The SFW gate and the minor-exposed
 # rule use it as is; the user's ``nsfw_threshold`` only sets blur under an NSFW policy.
@@ -63,24 +66,29 @@ def _young_person(age: AgeRecord, person: PersonAge) -> bool:
     return i is not None and 0 <= i < len(age.faces) and _young(age.faces[i].age_estimate_years)
 
 
-def _detected_faces(age: AgeRecord) -> list[FaceAge]:
-    """The faces proper: ``faces`` less the faceless people's estimates, which the estimators append last."""
-    faceless = sum(1 for p in age.people if p.face_index is None)
-    return age.faces[: max(0, len(age.faces) - faceless)]
+def _faceless_estimates(age: AgeRecord) -> set[tuple[float, tuple[float, float, float, float]]]:
+    """The ``faces`` entries that are a faceless person's estimate, known by value from ``people``, not by position."""
+    return {
+        (p.age_estimate_years, p.bbox) for p in age.people if p.face_index is None and p.age_estimate_years is not None
+    }
 
 
-def _overlap_rule(age: AgeRecord, detections: Sequence[NsfwDetection]) -> bool:
+def _overlap_rule(age: AgeRecord, detections: Sequence[Detection]) -> bool:
     """Exposure placed by box: on a young person, or on nobody, flags; on adults only, does not.
 
     With person boxes, else face boxes. Fails closed: a young face with no person box, a young age with no box,
     or exposure with no detection box to place it, flags.
     """
-    if not any(_young(face.age_estimate_years) for face in age.faces):
+    if not any(_young(f.age_estimate_years) for f in age.faces) and not any(_young_person(age, p) for p in age.people):
         return False
     young: list[tuple[float, float, float, float]]
     if age.people:
         matched = {p.face_index for p in age.people if p.face_index is not None}
-        if any(_young(f.age_estimate_years) and i not in matched for i, f in enumerate(_detected_faces(age))):
+        faceless = _faceless_estimates(age)
+        if any(
+            _young(f.age_estimate_years) and i not in matched and (f.age_estimate_years, f.bbox) not in faceless
+            for i, f in enumerate(age.faces)
+        ):
             return True  # a young face whose body was not found: any exposure may be theirs
         boxes = [p.bbox for p in age.people]
         young = [p.bbox for p in age.people if _young_person(age, p)]
@@ -96,7 +104,7 @@ def _overlap_rule(age: AgeRecord, detections: Sequence[NsfwDetection]) -> bool:
 def minor_exposed(
     age: AgeRecord | None,
     exposed_score: float | None,
-    detections: Sequence[NsfwDetection] = (),
+    detections: Sequence[Detection] = (),
     rule: MinorExposedRule = "frame",
 ) -> bool:
     """Whether an age estimate under 18 shares the image with exposure NudeNet scores >= 0.2.
@@ -146,7 +154,7 @@ def decide(
     exposed_score: float | None,
     age: AgeRecord | None = None,
     nsfw_threshold: float = DEFAULT_NSFW_THRESHOLD,
-    detections: Sequence[NsfwDetection] = (),
+    detections: Sequence[Detection] = (),
     minor_rule: MinorExposedRule = "frame",
 ) -> Decision:
     """The outcome for one scanned image.

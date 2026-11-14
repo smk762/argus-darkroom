@@ -8,7 +8,7 @@ import pytest
 from argus_cortex.moderation import GuardResult, NsfwDetection
 
 from argus_darkroom.guard import classify, unchecked
-from argus_darkroom.models import AgeRecord, Cell, FaceAge, PersonAge, ScanCells
+from argus_darkroom.models import AgeRecord, Cell, FaceAge, NudeNetBox, PersonAge, ScanCells
 from argus_darkroom.outcome import decide, minor_exposed, overlaps
 
 SAFE = Cell(state="safe", result=GuardResult(safe=True))
@@ -288,6 +288,23 @@ def test_overlap_a_faceless_young_person_is_placed_by_its_box() -> None:
     )
     assert overlap(age, exposed(ON_LEFT))
     assert not overlap(age, exposed(ON_RIGHT))
+
+
+def test_overlap_knows_faceless_people_from_people_not_from_the_order_of_faces() -> None:
+    # The faceless young person's estimate comes first in faces. Read by position, it would look like a young face
+    # whose body was not found, and the adult's exposure would delete; read from people, it is placed by its box.
+    age = AgeRecord(
+        faces=[FaceAge(age_estimate_years=12, bbox=LEFT), FaceAge(age_estimate_years=35, bbox=RIGHT_FACE)],
+        people=[PersonAge(bbox=LEFT, age_estimate_years=12), PersonAge(bbox=RIGHT, face_index=1)],
+    )
+    assert not overlap(age, exposed(ON_RIGHT))
+    assert overlap(age, exposed(ON_LEFT))
+
+
+def test_overlap_recomputes_from_the_records_boxes() -> None:
+    boxes = [NudeNetBox(label="FEMALE_BREAST_EXPOSED", score=0.6, bbox=ON_RIGHT)]
+    assert not overlap(two_people(12, 35), boxes)
+    assert overlap(two_people(35, 12), boxes)
 
 
 def test_overlap_without_people_uses_face_boxes() -> None:

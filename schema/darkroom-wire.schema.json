@@ -603,12 +603,59 @@
       "title": "ModelRef",
       "type": "object"
     },
+    "NudeNetBox": {
+      "description": "One NudeNet detection: a class, its score and where it is. A box, never pixels.",
+      "properties": {
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "NudeNetBox",
+      "type": "object"
+    },
     "NudeNetRecord": {
       "description": "What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not\nconfigured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it.",
       "properties": {
         "blur": {
           "title": "Blur",
           "type": "boolean"
+        },
+        "detections": {
+          "items": {
+            "$ref": "#/$defs/NudeNetBox"
+          },
+          "title": "Detections",
+          "type": "array"
         },
         "exposed_score": {
           "anyOf": [

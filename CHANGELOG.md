@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/health` reports it as `minor_exposed`.
 - The record's `guard.age` (and `guard.input.age`) gains `people`, every person box with its estimate and the face it
   was matched to, and `minor_exposed_rule`. Both are optional: older records load as `[]` and `"frame"`.
+  `guard.nudenet` (and `guard.input.nudenet`) gains `detections`: every NudeNet detection's label, score and box
+  (never pixels), so an `overlap` decision can be recomputed from the record. Older records load as `[]`.
   `record_version` stays 1.0; the wire schema is regenerated.
 - The age estimators keep curator's matched person boxes (`HttpAgeEstimator.read`, `CuratorAgeEstimator.read`).
   `estimate` still returns the faces alone.

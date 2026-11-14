@@ -141,7 +141,7 @@ Without a `NUDENET_URL`, every SFW output would be omitted. So the server refuse
 - `frame` (the default): any estimate under 18, from a face or a faceless person, anywhere in the frame. Where the exposure is does not matter, so an adult's exposure beside a clothed minor deletes too. This is the rule darkroom has always applied.
 - `overlap`: argus-curator's original `minor_exposed` rule. With person boxes (else face boxes), each exposed NudeNet detection scoring 0.2 or more deletes the image when it overlaps a box estimated under 18 or overlaps no box at all; one overlapping only adults' boxes does not. A matched person takes its face's estimate. It fails closed: a face under 18 whose body was not found makes any exposure count, as does an exposed score with no exposed detection box to place.
 
-Both ignore the user's NudeNet threshold. An age under 18 without exposure does not delete; it is recorded and shown. The record keeps every person box and its face link (`age.people`) and names the rule that decided (`age.minor_exposed_rule`). When the age check is unavailable, the record says `age: null` and the minors rule rests on SingGuard alone.
+Both ignore the user's NudeNet threshold. An age under 18 without exposure does not delete; it is recorded and shown. The record keeps every person box and its face link (`age.people`), NudeNet's detection boxes (`nudenet.detections`), and the rule that decided (`age.minor_exposed_rule`), so an `overlap` decision can be recomputed from the record. Faceless people are known from `age.people` (a null `face_index`), never from their position in `faces`. When the age check is unavailable, the record says `age: null` and the minors rule rests on SingGuard alone.
 
 The age is a tool's estimate from a face, and darkroom says so everywhere it appears. The record names its source (`mivolo`) and stores the estimate, never a stated age. The API field is `age_estimate_years`, not `age`. Safelight labels it as "MiVOLO estimate". A wrong estimate can delete an adult's image or, worse, pass a minor's. The second case is why the age check is an extra signal on top of SingGuard's minors rule, never a replacement for it.
 
@@ -183,7 +183,7 @@ GenerationRecord (record_version "1.0", wire schema committed)
     enforcing_policy, advisory_policies, thinking
     preflight: {policy: GuardResult}
     scans: {policy: {isolated: Cell, with_prompt: Cell}}   # Cell = state + GuardResult | error
-    nudenet: {exposed_score, labels, threshold, blur} | null
+    nudenet: {exposed_score, labels, detections: [{label, score, bbox}], threshold, blur} | null   # boxes, never pixels
     age: {source "mivolo", faces: [{age_estimate_years, bbox}], people: [{bbox, age_estimate_years | null, face_index | null}],
           minor_exposed, minor_exposed_rule "frame" | "overlap"} | null   # tool estimate
     input: {scans, nudenet, age, outcome, reason} | null   # the input image's own scan (image-to-image)

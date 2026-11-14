@@ -139,12 +139,23 @@ class ScanCells(BaseModel):
     with_prompt: Cell
 
 
+class NudeNetBox(BaseModel):
+    """One NudeNet detection: a class, its score and where it is. A box, never pixels."""
+
+    label: str
+    score: float
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels
+
+
 class NudeNetRecord(BaseModel):
     """What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not
     configured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it."""
 
     exposed_score: float | None
     labels: dict[str, float] = Field(default_factory=dict)
+    # Every detection NudeNet reported (all score >= 0.2), so an ``overlap`` minor-exposed decision can be recomputed
+    # from the record. Empty when it did not answer, and in records from before boxes were kept.
+    detections: list[NudeNetBox] = Field(default_factory=list)
     # The user's ``nsfw_threshold`` (blur). The SFW gate is a fixed 0.2 and ignores it.
     threshold: float
     # Whether safelight blurs the image until the user reveals it. True under an NSFW policy when NudeNet scores it at
