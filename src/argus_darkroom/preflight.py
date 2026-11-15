@@ -65,11 +65,15 @@ def run_preflight(
     names = [enforcing_policy, *(p for p in advisory_policies if p != enforcing_policy)]
     cells = {name: guard.check_text(name, framed, thinking) for name in names}
 
-    # Any illegal rule under any policy refuses, in both modes.
+    # Any illegal rule under any policy refuses, in both modes; an illegal state without a result still refuses.
     illegal = [
-        (name, rule_codes(name, illegal_rules_fired(name, cell.result)))
+        (
+            name,
+            (rule_codes(name, illegal_rules_fired(name, cell.result)) if cell.result is not None else [])
+            or ["illegal"],
+        )
         for name, cell in cells.items()
-        if cell.state == "illegal" and cell.result is not None
+        if cell.state == "illegal"
     ]
     if illegal:
         return PreflightResult(
@@ -81,8 +85,9 @@ def run_preflight(
         return PreflightResult(framed, cells, "refused", "unchecked", enforcing_policy)
 
     warnings: list[str] = []
-    if enforcing.state == "flagged" and enforcing.result is not None:
-        codes = ", ".join(rule_codes(enforcing_policy, enforcing.result.rules)) or "unspecified"
+    if enforcing.state == "flagged":
+        rules = enforcing.result.rules if enforcing.result is not None else []
+        codes = ", ".join(rule_codes(enforcing_policy, rules)) or "unspecified"
         if policy_table.mode(enforcing_policy) == "sfw":
             return PreflightResult(framed, cells, "refused", codes, enforcing_policy)
         warnings.append(f"{enforcing_policy}: flagged {codes}; the output scan decides")

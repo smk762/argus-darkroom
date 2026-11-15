@@ -8,6 +8,8 @@ from fakes import FakeSingGuard, policy_of, safe_answer, unsafe_answer
 from argus_darkroom.config import ConfigError, Settings
 from argus_darkroom.engine import Engine
 from argus_darkroom.guard import Guard
+from argus_darkroom.models import Cell
+from argus_darkroom.preflight import run_preflight
 from argus_darkroom.prompt import assemble_prompt, frame
 from argus_darkroom.request import GenerateRequest, RequestError
 
@@ -231,3 +233,38 @@ def test_a_refusal_is_recorded_without_an_image(singguard, tmp_path) -> None:
     assert record.guard.preflight["default"].state == "flagged"
     assert eng.store.load(record.id) == record
     assert sorted(p.suffix for p in tmp_path.iterdir()) == [".json"]
+
+
+# --- a verdict without a result fails closed -----------------------------------------------------------
+
+
+class StubGuard:
+    """A guard whose cells carry a state but no SingGuard result, as a degraded answer might."""
+
+    def __init__(self, states: dict[str, str]) -> None:
+        self.states = states
+
+    def check_text(self, policy: str, text: str, thinking: str | None = None) -> Cell:
+        return Cell(state=self.states.get(policy, "safe"))
+
+
+@pytest.mark.parametrize("enforcing", ["default", "adult-granular"])
+def test_illegal_without_a_result_refuses(enforcing) -> None:
+    result = run_preflight(StubGuard({enforcing: "illegal"}), "x", "", enforcing)
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "illegal", enforcing)
+
+
+def test_illegal_advisory_without_a_result_refuses() -> None:
+    result = run_preflight(StubGuard({"adult-granular": "illegal"}), "x", "", "default", ["adult-granular"])
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "illegal", "adult-granular")
+
+
+def test_flagged_without_a_result_refuses_under_sfw() -> None:
+    result = run_preflight(StubGuard({"default": "flagged"}), "x", "", "default")
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "unspecified", "default")
+
+
+def test_flagged_without_a_result_warns_under_nsfw() -> None:
+    result = run_preflight(StubGuard({"adult-granular": "flagged"}), "x", "", "adult-granular")
+    assert result.verdict == "proceed"
+    assert result.warnings == ["adult-granular: flagged unspecified; the output scan decides"]

@@ -209,14 +209,15 @@ class Engine:
             rules = cell.result.rules if cell.result is not None else []
             refusal = {
                 "policy": pre.refusing_policy,
-                "reason": rule_letter(rules[0]).removesuffix(".") if rules else "unchecked",
+                "reason": rule_letter(rules[0]).removesuffix(".") if rules else (pre.reason or "unchecked"),
                 "rule": rules[0] if rules else None,
                 "explanation": (cell.result.explanation if cell.result is not None else cell.error),
             }
-        elif pre.cells[enforcing].state == "flagged" and pre.cells[enforcing].result is not None:
+        elif pre.cells[enforcing].state == "flagged":
             result = pre.cells[enforcing].result
-            rule = result.rules[0] if result.rules else None
-            warnings.append({"policy": enforcing, "rule": rule, "explanation": result.explanation})
+            rule = result.rules[0] if result is not None and result.rules else None
+            explanation = result.explanation if result is not None else None
+            warnings.append({"policy": enforcing, "rule": rule, "explanation": explanation})
         return {
             "mode": policy_table.mode(enforcing),
             "enforcing_policy": enforcing,
