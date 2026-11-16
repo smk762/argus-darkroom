@@ -200,7 +200,7 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 |---|---|---|
 | `SINGGUARD_URL` | | **Required.** |
 | `COMFYUI_URL` | `http://localhost:8188` | |
-| `NUDENET_URL` | | Empty: SFW generation unavailable. |
+| `NUDENET_URL` | | Empty: SFW generation unavailable. Point it at the suite's shared 640m server (argus-cortex#79) once it is up; each record names the detector that scored it. |
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra, or no age check. |
 | `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. |
@@ -294,7 +294,7 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, and `gpu` as `{coordinator, in_flight, limit}` |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
@@ -343,9 +343,13 @@ judged in full either way. It is cut at 128 into a 1-bit PNG with no metadata, s
 input, and never stored. The record keeps `request.init_image.mask` (`sha256` of that PNG, `source_sha256` of the bytes
 sent, `masked_fraction`: the share of the input it repaints, to 4 decimals).
 
-Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`);
-`blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet could not be reached, and the
-image is then blurred. Each LoRA in `params.loras` keeps the `trigger_words` the request supplied.
+Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`,
+`detector`, `detector_model`); `blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet
+could not be reached, and the image is then blurred. `detector` is the NudeNet model that scored the image, as its server
+reports it: `640m`, `320n`, or `null` when NudeNet did not answer or its server does not say (the upstream 320n image has
+no `/health`). 640m and 320n score the same image differently, so compare scores, and the `threshold` they were judged
+against, only within one detector. The default threshold, 0.2, was set before the suite's move to one shared 640m server
+(argus-cortex#79) and is re-checked against it there. Each LoRA in `params.loras` keeps the `trigger_words` the request supplied.
 
 ## Demo (no GPU)
 

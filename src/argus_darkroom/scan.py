@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import structlog
 from argus_cortex.moderation import CheckFailed, NsfwResult, NudeNetClient
+from argus_cortex.moderation.nudenet import NudeNetInfo
 
 from argus_darkroom.age import AgeEstimator, read_ages
 from argus_darkroom.guard import Guard
@@ -34,6 +35,9 @@ class Scan:
     scans: dict[str, ScanCells]
     nsfw: NsfwResult | None  # None: NudeNet is not configured, or did not answer
     age: AgeRecord | None  # None: the age check is unavailable, or failed for this image
+    # Which model the NudeNet server says it runs, asked after it scored this image. None: it was not asked (no score),
+    # or could not say. Recorded with the score, never used to decide: 640m and 320n score the same image differently.
+    nudenet_info: NudeNetInfo | None = None
 
 
 class Scanner:
@@ -59,7 +63,9 @@ class Scanner:
             if on_cell:
                 on_cell(policy, "with_prompt", with_prompt)
             scans[policy] = ScanCells(isolated=isolated, with_prompt=with_prompt)
-        return Scan(scans=scans, nsfw=self._nudenet(data), age=self._ages(data))
+        nsfw = self._nudenet(data)
+        info = self._nudenet_info() if nsfw is not None else None
+        return Scan(scans=scans, nsfw=nsfw, age=self._ages(data), nudenet_info=info)
 
     def _nudenet(self, data: bytes) -> NsfwResult | None:
         if self.nudenet is None:
@@ -70,6 +76,18 @@ class Scanner:
             logger.warning("nudenet.failed", error=str(exc))
         except Exception:
             logger.exception("nudenet.unexpected_error")
+        return None
+
+    def _nudenet_info(self) -> NudeNetInfo | None:
+        """The model the NudeNet server runs. A failure here costs only the record's ``detector``, never the score."""
+        if self.nudenet is None:
+            return None
+        try:
+            return self.nudenet.info()
+        except CheckFailed as exc:
+            logger.warning("nudenet.info_failed", error=str(exc))
+        except Exception:
+            logger.exception("nudenet.info_unexpected_error")
         return None
 
     def _ages(self, data: bytes) -> AgeRecord | None:

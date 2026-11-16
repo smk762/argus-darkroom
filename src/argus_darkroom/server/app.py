@@ -44,6 +44,7 @@ from typing import Literal
 
 import structlog
 from argus_cortex.gpu_wire import PriorityClass
+from argus_cortex.moderation import NudeNetClient
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import WriteGuard, constant_refuse, cross_site_refuse
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -80,6 +81,16 @@ def probe(url: str) -> bool:
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return True
+
+
+def nudenet_detector(client: NudeNetClient | None) -> str | None:
+    """The NudeNet detector the server reports (``640m``, ``320n``), or ``None``. Never raises: it is only reported."""
+    if client is None:
+        return None
+    try:
+        return client.info().detector
+    except Exception:  # an unreachable server is already in "backends"
+        return None
 
 
 READ_ONLY_REFUSAL = "argus-darkroom is read-only: generation, pre-flight and record changes are disabled"
@@ -237,10 +248,12 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
         # Re-probe the estimator the engine actually uses, alongside the other backends; the boot status is stale.
         remote = engine.scanner.age if isinstance(engine.scanner.age, HttpAgeEstimator) else None
-        with ThreadPoolExecutor(len(urls) + 1) as pool:
+        with ThreadPoolExecutor(len(urls) + 2) as pool:
             age_future = pool.submit(remote_age_status, remote.base_url) if remote is not None else None
+            detector_future = pool.submit(nudenet_detector, engine.scanner.nudenet)
             up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
             age = age_future.result() if age_future is not None else engine.age_status
+            detector = detector_future.result()
         return {
             "version": __version__,
             # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
@@ -254,6 +267,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "thinking": cfg.thinking,
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
+            # The NudeNet detector the server reports ("640m", "320n"), or null when it does not say or is unreachable.
+            "nudenet_detector": detector,
             "expansion_enabled": cfg.expansion_enabled,
             "workflow_loaded": engine.workflows is not None,
             "workflows": engine.workflows.names if engine.workflows else [],
