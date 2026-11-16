@@ -24,7 +24,7 @@ def new_id() -> str:
 
 
 def valid_id(record_id: str) -> bool:
-    return bool(_ID.match(record_id))
+    return bool(_ID.fullmatch(record_id))
 
 
 def _write_atomic(path: Path, data: bytes) -> str:

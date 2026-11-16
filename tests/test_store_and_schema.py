@@ -10,7 +10,7 @@ from argus_darkroom.models import (
     RequestRecord,
     render_wire_schema,
 )
-from argus_darkroom.store import RecordStore, new_id
+from argus_darkroom.store import RecordStore, new_id, valid_id
 
 
 def record(outcome="refused", **kw) -> GenerationRecord:
@@ -46,6 +46,16 @@ def test_a_crafted_id_cannot_leave_the_root(tmp_path) -> None:
         store.record_path("../secret")
     with pytest.raises(ValueError):
         store.image_path("a/b")
+
+
+def test_an_id_with_a_trailing_newline_is_refused(tmp_path) -> None:
+    # `$` also matches before a final newline; the id check matches the whole string.
+    record_id = new_id()
+    assert valid_id(record_id)
+    assert not valid_id(record_id + "\n")
+    store = RecordStore(tmp_path / "root")
+    with pytest.raises(ValueError):
+        store.record_path(record_id + "\n")
 
 
 def test_unreadable_files_are_skipped(tmp_path) -> None:

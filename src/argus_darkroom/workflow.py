@@ -243,7 +243,7 @@ def parse_workflow(
     names: set[int] = set()
     weights: set[int] = set()
     for value in placeholders:
-        if match := _LORA.match(value):
+        if match := _LORA.fullmatch(value):
             (weights if match.group(2) else names).add(int(match.group(1) or 1))
     lora_slots = len(names)
     if names != weights or names != set(range(1, lora_slots + 1)):
@@ -352,7 +352,7 @@ def load_workflows(path: str | Path) -> WorkflowSet:
     for file in sorted(path.glob("*.json")):
         if file.name.startswith("."):
             continue
-        match = _SET_MEMBER.match(file.stem)
+        match = _SET_MEMBER.fullmatch(file.stem)
         if match is None:
             raise WorkflowError(
                 f"{file}: a workflow in a directory is named <family>.json or <family>+lora<N>.json, with +img2img "
@@ -438,7 +438,7 @@ def render(workflow: Workflow, params: RenderParams) -> dict:
                 raise WorkflowError(f"the workflow uses {value} but this run has no value for it")
             seen.add(value)
             return scalars[value]
-        match = _LORA.match(value)
+        match = _LORA.fullmatch(value)
         if match:
             index, is_weight = int(match.group(1) or 1), bool(match.group(2))
             lora = loras.get(index)
