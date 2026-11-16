@@ -70,6 +70,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - argus-curator `>=0.16,<0.17` for the `[age]` extra and the tests: 0.16 is the first curator on cortex 0.6
   (argus-curator#157). Curator 0.15 and later carry more face measurements; darkroom reads only the age estimates and
   boxes, so nothing else changes.
+- Record ids and workflow placeholder and file names are checked with `fullmatch` (argus-cortex's `fullmatch`
+  codemod, ai-code-auditor#56), so they match the whole string: `$` also matches before a final newline, so an id
+  followed by `\n` used to pass `valid_id`.
 
 ### Fixed
 
