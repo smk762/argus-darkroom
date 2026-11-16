@@ -554,6 +554,8 @@ class Engine:
             detections=[NudeNetBox(label=d.label, score=d.score, bbox=tuple(d.bbox)) for d in detections],
             threshold=request.nsfw_threshold,
             blur=decision.blur,
+            detector=scan.nudenet_info.detector if scan.nudenet_info is not None else None,
+            detector_model=scan.nudenet_info.model if scan.nudenet_info is not None else None,
         )
         return decision, age, nudenet
 

@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The NudeNet detector is recorded with its score** (#54). `guard.nudenet` gains `detector` (`640m`, `320n`, or
+  `null`) and `detector_model` (the weights file the server named), from cortex's `NudeNetClient.info()`, asked after
+  each successful score, for outputs and input images alike. 640m and 320n score the same image differently, so
+  records from before and after the suite's move to one shared 640m server (argus-cortex#79) can be told apart.
+  Metadata only: a server that does not say, or whose `/health` fails, scores and decides exactly as before.
+  `record_version` stays 1.0 and the wire schema is regenerated. `/health` gains `nudenet_detector`.
+
 - **GPU leases from argus-iris** (#53). Each render and depth map holds a lease on `comfyui` and each prompt expansion
   one on `ollama:<model>`, through argus-cortex's coordinator (`ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_BROKER_URL`,
   `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST`, `ARGUS_GPU_BROKER_FALLBACK`; unset gates nothing, as before).
@@ -53,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- argus-cortex `>=0.7,<0.8` for `NudeNetClient.info()`, and argus-curator `>=0.17,<0.18`, the first curator on
+  cortex 0.7 (#54).
 - argus-cortex `>=0.6,<0.7`, with the `[remote]` (broker client) and `[yaml]` (manifest) extras.
 - argus-curator `>=0.16,<0.17` for the `[age]` extra and the tests: 0.16 is the first curator on cortex 0.6
   (argus-curator#157). Curator 0.15 and later carry more face measurements; darkroom reads only the age estimates and

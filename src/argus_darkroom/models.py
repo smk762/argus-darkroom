@@ -161,6 +161,13 @@ class NudeNetRecord(BaseModel):
     # Whether safelight blurs the image until the user reveals it. True under an NSFW policy when NudeNet scores it at
     # or above the threshold, or did not answer. Always false under an SFW policy.
     blur: bool
+    # The NudeNet detector that scored the image, as its server reports it (cortex's ``NudeNetClient.info()``):
+    # "640m", "320n", or null when NudeNet did not answer, the server did not say (the upstream 320n image has no
+    # /health), or names another model. 640m and 320n score the same image differently, so the scores (and the
+    # threshold they were judged against) are comparable only within one detector. Null in older records.
+    detector: str | None = None
+    # The weights file the server named (e.g. "640m.onnx"), or null.
+    detector_model: str | None = None
 
 
 class FaceAge(BaseModel):

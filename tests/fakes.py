@@ -82,9 +82,18 @@ class FakeSingGuard:
 
 
 class FakeNudeNet:
-    """``POST /infer``: answers one image with *labels* (class -> score), as the NudeNet server does."""
+    """``POST /infer``: answers one image with *labels* (class -> score), as the NudeNet server does.
 
-    def __init__(self, labels: dict[str, float] | None = None, status: int = 200) -> None:
+    ``GET /health`` names *model* (the shared 640m server's shape). ``model=None`` answers 404, as the upstream 320n
+    image does; ``health_status`` sets another status.
+    """
+
+    def __init__(
+        self, labels: dict[str, float] | None = None, status: int = 200, model: str | None = "640m.onnx"
+    ) -> None:
+        self.model = model
+        self.health_status = 200
+        self.health_calls = 0
         self.labels = labels or {}
         self.box = [0, 0, 10, 10]  # every detection's [x, y, w, h]
         self.status = status
@@ -93,6 +102,17 @@ class FakeNudeNet:
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                fake.health_calls += 1
+                status = 404 if self.path != "/health" or fake.model is None else fake.health_status
+                body = {"ok": True, "model": fake.model, "resolution": 640} if status == 200 else {}
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
             def do_POST(self) -> None:
                 fake.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.calls += 1
