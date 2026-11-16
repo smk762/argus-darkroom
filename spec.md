@@ -219,7 +219,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
-- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409.
+- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409. With the GPU broker (argus-iris, `ARGUS_GPU_COORDINATOR=broker`) up to eight run at once, each waiting for its own GPU lease, so a second queues behind iris instead; the caller's `X-Argus-Priority` sets the lease class (`interactive` by default).
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
 - `GET /image/{id}`: ids only, no path input. A deleted, omitted or refused record answers 404 with the record id.
 - `DELETE /record/{id}`: the user removing their own output. This deletes the file; the record stays, marked as removed by the user.

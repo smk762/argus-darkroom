@@ -20,8 +20,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    # [server] is for env_flag, which the config reads even without the HTTP server
-    "argus-cortex[images,server]>=0.4.6,<0.6",
+    # [server] is for env_flag, which the config reads even without the HTTP server. [remote] is the GPU broker client
+    # (argus-iris) and [yaml] reads gpu-tenant.yaml; both are used only with ARGUS_GPU_COORDINATOR=broker.
+    "argus-cortex[images,server,remote,yaml]>=0.6,<0.7",
     "pydantic>=2.7",
     # ComfyUI returns the image over its websocket; stdlib has no client
     "websockets>=15",
@@ -70,3 +71,8 @@ extend-exclude = ["src/argus_darkroom/_version.py"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = ["E501", "B008"]
+
+[tool.uv]
+# TEMPORARY: argus-curator 0.14 (the [age] extra and the tests' result models) still pins argus-cortex <0.5. Drop this
+# once curator ships cortex 0.6 (argus-curator#155) and the curator ranges above move to that release.
+override-dependencies = ["argus-cortex[images,server,remote,yaml]>=0.6,<0.7"]

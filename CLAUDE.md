@@ -51,6 +51,7 @@ Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 | `preflight.py`, `scan.py`, `guard.py` | the text check, the image scans, and the SingGuard wrapper that turns failures into `unchecked` |
 | `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
 | `expansion.py` | `OllamaExpander`. Ollama is never a guard |
+| `gpu.py` | GPU leases from argus-iris through cortex's coordinator: the kinds and footprints (kept in step with `gpu-tenant.yaml`), `X-Argus-Priority`, and how a lease failure reads. A lease is never nested, and never an OOM |
 | `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and mode: `+img2img`, `+inpaint`), model sha256s |
 | `images.py` | an image's hashes (`describe`), `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent, and `load_mask`: the inpainting mask, checked against the input's size and cut into a 1-bit PNG |
 | `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk), and `DarkroomDepthAnything` (`darkroom_depth.py`: Depth Anything V2 Small only, from a local folder) |
