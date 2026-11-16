@@ -229,7 +229,7 @@ suite's host-wide names, read by argus-cortex, not `ARGUS_DARKROOM_*`:
 | Variable | Default | |
 |---|---|---|
 | `ARGUS_GPU_COORDINATOR` | `none` | `broker` for iris; `lease` for a host-wide lock file; `none` gates nothing (as before). |
-| `ARGUS_GPU_BROKER_URL` | | Where iris listens, e.g. `http://morpheus:8120`. |
+| `ARGUS_GPU_BROKER_URL` | | Where iris listens, e.g. `http://<GPU_BROKER_HOST>:8120`. Use an IP: the container does not resolve LAN host names. |
 | `ARGUS_GPU_BROKER_TOKEN` | | The suite's shared caller token (`Authorization: Bearer`). A secret: the host's `.env` only. |
 | `ARGUS_GPU_TENANT_MANIFEST` | compose: `/app/gpu-tenant.yaml` | The committed [`gpu-tenant.yaml`](gpu-tenant.yaml), registered with iris on the first lease. Or `ARGUS_GPU_TENANT=argus-darkroom`. |
 | `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Used while iris is unreachable, answers 5xx, or has no lease routes yet: `lease` or `none`. |
