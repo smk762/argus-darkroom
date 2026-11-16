@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `scripts/nudenet_compare.py` (#54), run by hand: scores darkroom's stored images (`--records`) and/or a hand-sorted
+  `blur/`/`clear/` folder (`--labelled`) on an old and a new NudeNet server, and sweeps the new one's cutoff against
+  the old 0.2 (`EXPOSED_FLOOR`, `DEFAULT_NSFW_THRESHOLD`). Reports names and scores, never image bytes.
+
 - **The NudeNet detector is recorded with its score** (#54). `guard.nudenet` gains `detector` (`640m`, `320n`, or
   `null`) and `detector_model` (the weights file the server named), from cortex's `NudeNetClient.info()`, asked after
   each successful score, for outputs and input images alike. 640m and 320n score the same image differently, so
