@@ -82,6 +82,10 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
   them to mocking.
 - `scripts/preflight_eval.py` is run by hand against a real SingGuard that supports text-only checks (agent-composer
   PR #4). It is not a test.
+- `scripts/nudenet_compare.py` is run by hand: it scores darkroom's stored images (or a hand-sorted `blur/`/`clear/`
+  folder outside the repo) on two NudeNet servers and sweeps the new one's cutoff against the old 0.2. It reports
+  names and scores only. Stored images are all released ones, so that sample has no deleted or omitted images. It
+  is not a test, and its sample never enters the repo.
 
 ## Branches
 
