@@ -217,6 +217,38 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 
 `ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
 
+### GPU leases (argus-iris)
+
+Darkroom runs no model itself, but ComfyUI and Ollama do, on GPUs other services share. With the suite's GPU broker,
+[argus-iris](https://github.com/smk762/argus-iris), each render (and each depth map) holds a lease on `comfyui` and
+each prompt expansion one on `ollama:<OLLAMA_MODEL>`, for as long as the work runs. Iris queues them by priority,
+makes room first, and may name the node to send the work to: darkroom then calls that node's ComfyUI or Ollama
+instead of its own URL. The scans hold no lease: SingGuard, NudeNet and curator are tenants of their own. These are the
+suite's host-wide names, read by argus-cortex, not `ARGUS_DARKROOM_*`:
+
+| Variable | Default | |
+|---|---|---|
+| `ARGUS_GPU_COORDINATOR` | `none` | `broker` for iris; `lease` for a host-wide lock file; `none` gates nothing (as before). |
+| `ARGUS_GPU_BROKER_URL` | | Where iris listens, e.g. `http://morpheus:8120`. |
+| `ARGUS_GPU_BROKER_TOKEN` | | The suite's shared caller token (`Authorization: Bearer`). A secret: the host's `.env` only. |
+| `ARGUS_GPU_TENANT_MANIFEST` | compose: `/app/gpu-tenant.yaml` | The committed [`gpu-tenant.yaml`](gpu-tenant.yaml), registered with iris on the first lease. Or `ARGUS_GPU_TENANT=argus-darkroom`. |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Used while iris is unreachable, answers 5xx, or has no lease routes yet: `lease` or `none`. |
+| `ARGUS_GPU_LEASE_TIMEOUT_S` | 300 | How long a run waits for its lease. |
+
+- **Priority** comes from the caller's `X-Argus-Priority` header on `POST /generate/stream` and `POST /depth/{id}`:
+  `interactive` (the default: a person at safelight or studio), `batch` (mint's sample runs) or `background`.
+  `realtime` is taken as `interactive`; anything else is a 400. The CLI takes `--priority`.
+- **Queueing.** With `broker`, up to 8 generations and depth runs may be in flight at once, each waiting for its own
+  lease, so a second generation waits in iris's queue instead of getting a 409 (callers can drop their retry loops).
+  The SSE stream sends `queued` before the wait. A ninth still gets a 409, and a purge still waits for none to run.
+  With `none` or `lease`, one at a time as before.
+- **A lease is not an OOM.** A refused lease, one not granted in time, or a broker error is a `failed` record whose
+  reason says so; nothing retries it. A failed expansion lease is `expansion failed: ...` like any failed expansion.
+- **Every ComfyUI is checked.** The output-node check runs once per workflow on each ComfyUI darkroom renders on, the
+  prompt is deleted from the history of the ComfyUI that rendered it, and `POST /purge` clears every ComfyUI the
+  broker has sent work to since the server started.
+- In the container, the `lease` fallback orders darkroom's own runs only: no lock directory is shared with the host.
+
 Policies are chosen by name (`default`, `adult`, `adult-granular`, `adult-cautious`, `adult-cinematic`); a request cannot carry policy
 text. `default` and `sfw-*` are SFW, the rest NSFW. SFW refuses on any pre-flight flag and omits exposed output. NSFW
 warns on non-illegal flags and blurs exposed output, and illegal content is refused and deleted in both.
@@ -237,7 +269,7 @@ argus-darkroom version
 
 | Command | Options |
 |---|---|
-| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--json` (print the whole record instead of a summary) |
+| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--priority` (the GPU lease class, default `interactive`; see [GPU leases](#gpu-leases-argus-iris)), `--json` (print the whole record instead of a summary) |
 | `preflight PROMPT` | The text check alone: `--negative`/`-n`, `--policy`, `--advisory`, `--thinking`, `--trigger-word` (repeatable). Prints the verdicts as JSON |
 | `serve` | `--port`/`-p` (default 8106), `--host` (default `127.0.0.1`), `--output-root`, `--allow-nsfw`, `--cors-origin` (repeatable). Each overrides its `ARGUS_DARKROOM_*` variable |
 | `schema` | Writes `schema/darkroom-wire.schema.json`, or `--output`/`-o` somewhere else. `--check` exits 1 when the committed file is stale |
@@ -262,15 +294,15 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `minor_exposed` (the rule), `workflows` (names) |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, and `gpu` as `{coordinator, in_flight, limit}` |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
-| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
-| `POST /depth/{id}` | a depth map of the record's stored image; returns the record's new `depth` object. 404 for no such record, 409 when the record has no stored image (deleted, omitted, refused, failed or removed) or a generation is running (it shares the one-at-a-time lock), 502 when ComfyUI fails. Idempotent: a second call returns the stored map without recomputing. A write: refused cross-site and under `READ_ONLY` |
+| `POST /depth/{id}` | a depth map of the record's stored image; returns the record's new `depth` object. 404 for no such record, 409 when the record has no stored image (deleted, omitted, refused, failed or removed) or the gate is full (it shares the generations' gate: one at a time, or eight with the GPU broker), 502 when ComfyUI fails or no GPU lease is granted. `X-Argus-Priority` sets its lease class. Idempotent: a second call returns the stored map without recomputing. A write: refused cross-site and under `READ_ONLY` |
 | `GET /depth/{id}` | the depth map as `image/png`; 404 with the record id when there is none |
 | `GET /archive` | streamed zip of every record, stored image (`images/`) and depth map (`depth/<id>.png`) |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |

@@ -5,7 +5,8 @@
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
 ``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
-``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``
+``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``.
+                          ``X-Argus-Priority`` picks the GPU lease class (``interactive`` by default)
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
 ``GET /image/{id}``       ids only, no path input; 404 with the record id when there is no stored image
 ``DELETE /record/{id}``   the user removing their own output: the file goes (its depth map too), the record stays
@@ -19,6 +20,10 @@
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
 ``cross_site_refuse``, because CORS alone is not a write boundary). The server binds to localhost by default.
 With ``ARGUS_DARKROOM_READ_ONLY=1`` every write is refused from every origin, ``POST /preflight`` included.
+
+One generation runs at a time and a second gets 409, unless the GPU coordinator is the broker (argus-iris): then up to
+:data:`~argus_darkroom.gpu.MAX_IN_FLIGHT` run at once, each waiting for its own lease, and iris queues them by
+priority. A purge always waits for none to be running.
 """
 
 from __future__ import annotations
@@ -38,14 +43,15 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
 import structlog
+from argus_cortex.gpu_wire import PriorityClass
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import WriteGuard, constant_refuse, cross_site_refuse
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from argus_darkroom import __version__
+from argus_darkroom import __version__, gpu
 from argus_darkroom.age import HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
@@ -101,6 +107,63 @@ def sse(kind: str, data: object) -> bytes:
     return f"event: {kind}\ndata: {json.dumps(data)}\n\n".encode()
 
 
+class RunGate:
+    """Generations and depth runs share it (:meth:`enter`); a purge takes it alone (:meth:`acquire`).
+
+    Up to *limit* shared runs at once, and none while a purge holds it. ``acquire``, ``release`` and ``locked`` keep the
+    shape of the lock this replaced.
+    """
+
+    def __init__(self, limit: int = 1) -> None:
+        self.limit = max(1, limit)
+        self._cond = threading.Condition()
+        self._running = 0
+        self._exclusive = False
+
+    @property
+    def running(self) -> int:
+        return self._running
+
+    def enter(self) -> bool:
+        """Start a shared run, or ``False`` at once when the limit is reached or a purge is running."""
+        with self._cond:
+            if self._exclusive or self._running >= self.limit:
+                return False
+            self._running += 1
+            return True
+
+    def leave(self) -> None:
+        with self._cond:
+            self._running -= 1
+            self._cond.notify_all()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        """Take it alone: no shared run and no other purge."""
+        with self._cond:
+            while self._exclusive or self._running:
+                if not blocking:
+                    return False
+                self._cond.wait()
+            self._exclusive = True
+            return True
+
+    def release(self) -> None:
+        with self._cond:
+            self._exclusive = False
+            self._cond.notify_all()
+
+    def locked(self) -> bool:
+        return self._exclusive or self._running > 0
+
+
+def priority_of(x_argus_priority: str | None = Header(None)) -> PriorityClass:
+    """The GPU lease class from ``X-Argus-Priority``: mint's sample runs send ``batch``, a person's form nothing."""
+    try:
+        return gpu.parse_priority(x_argus_priority)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 class _Sink(io.RawIOBase):
     """A write-only stream that hands what was written to the zip back out as chunks."""
 
@@ -127,7 +190,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     cfg = engine.settings
     app = FastAPI(title="Argus Darkroom", description="Guarded image generation.", version=__version__)
     app.state.engine = engine
-    busy = threading.Lock()  # held for the whole of one generation (or a purge)
+    # Entered for the whole of each generation or depth run, taken alone by a purge. One run at a time, unless the GPU
+    # broker queues them: then each waits for its own lease and the gate only bounds how many may wait.
+    busy = RunGate(gpu.MAX_IN_FLIGHT if gpu.queues(engine.gpu) else 1)
     app.state.busy = busy
     # Held while a stored record changes, so a removal that read a record cannot save it back over a purge. Separate from
     # busy, which would refuse every removal during a generation.
@@ -149,6 +214,11 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    def busy_detail() -> str:
+        if busy.limit == 1:
+            return "a generation is already running"
+        return f"{busy.limit} generations are already queued or running"
 
     def record_or_404(record_id: str) -> GenerationRecord:
         record = engine.store.load(record_id) if valid_id(record_id) else None
@@ -190,6 +260,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "devmode": cfg.devmode,
             "read_only": cfg.read_only,
             "generating": busy.locked(),
+            # ARGUS_GPU_COORDINATOR (none, lease or broker); how many runs are in flight, and how many may be.
+            "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
         }
 
     @app.get("/policies")
@@ -256,16 +328,18 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         return engine.preflight_view(request, result) | {"expansion_applied": False}
 
     @app.post("/generate/stream")
-    async def generate_stream(request: GenerateRequest) -> StreamingResponse:
-        if not busy.acquire(blocking=False):
-            raise HTTPException(409, "a generation is already running")
+    async def generate_stream(
+        request: GenerateRequest, priority: PriorityClass = Depends(priority_of)
+    ) -> StreamingResponse:
+        if not busy.enter():
+            raise HTTPException(409, busy_detail())
         try:
-            run = await run_in_threadpool(engine.begin, request)
+            run = await run_in_threadpool(engine.begin, request, priority)
         except RequestError as exc:
-            busy.release()
+            busy.leave()
             raise HTTPException(400, str(exc)) from exc
         except BaseException:
-            busy.release()
+            busy.leave()
             raise
 
         loop = asyncio.get_running_loop()
@@ -282,7 +356,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 logger.exception("generate.failed")
                 put(("error", {"detail": "the generation failed unexpectedly; no image was released"}))
             finally:
-                busy.release()  # the run goes on to its record even if the client has hung up
+                busy.leave()  # the run goes on to its record even if the client has hung up
                 put(None)
 
         threading.Thread(target=work, name="darkroom-generate", daemon=True).start()
@@ -357,7 +431,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         return data
 
     @app.post("/depth/{record_id}")
-    async def make_depth(record_id: str) -> DepthRecord:
+    async def make_depth(record_id: str, priority: PriorityClass = Depends(priority_of)) -> DepthRecord:
         """A depth map of the record's stored image, computed once and kept beside it.
 
         No pre-flight and no scan: the image was already judged and released, and nothing new (no prompt, no imagery)
@@ -367,12 +441,12 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         if found.depth is not None and engine.store.depth_path(record_id).is_file():
             return found.depth  # already made: never recomputed
         image = stored_image(found)
-        if not busy.acquire(blocking=False):
-            raise HTTPException(409, "a generation is already running")
+        if not busy.enter():
+            raise HTTPException(409, busy_detail())
 
         def compute() -> DepthRecord:
             try:
-                depth_map, depth_record = engine.depth(found, image)
+                depth_map, depth_record = engine.depth(found, image, priority)
             except GenerationError as exc:
                 logger.warning("depth.failed", record_id=record_id, error=str(exc))
                 raise HTTPException(502, f"the depth map could not be made: {exc}") from exc
@@ -395,7 +469,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         try:
             return await run_in_threadpool(compute)
         finally:
-            busy.release()
+            busy.leave()
 
     @app.get("/depth/{record_id}")
     def depth_image(record_id: str):
@@ -493,11 +567,16 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
 
             try:
                 removed = await run_in_threadpool(purge_files)
-                try:
-                    history: int | None = await run_in_threadpool(engine.comfyui.purge_history)
-                except GenerationError as exc:
-                    logger.warning("purge.history_failed", error=str(exc))
-                    history = None  # ComfyUI could not be reached: said so, not hidden
+                history: int | None = 0
+                # The configured ComfyUI and every one the GPU broker sent work to.
+                for comfyui in engine.comfyui_clients():
+                    try:
+                        cleared = await run_in_threadpool(comfyui.purge_history)
+                    except GenerationError as exc:
+                        logger.warning("purge.history_failed", error=str(exc))
+                        history = None  # a ComfyUI could not be reached: said so, not hidden
+                    else:
+                        history = None if history is None else history + cleared
                 return removed | {"comfyui_history": history}
             finally:
                 busy.release()

@@ -11,20 +11,28 @@ history after the run.
 
 An inpainting mask travels the same way and is never written either, but it is not scanned: it only says which
 pixels of the checked input are repainted, and carries no imagery. The output is scanned and decided as usual.
+
+The render and the prompt expansion each hold a GPU lease (:mod:`argus_darkroom.gpu`) for as long as ComfyUI or
+Ollama works on them, and go to the URL the lease names, if it names one. The scans hold none: SingGuard, NudeNet and
+curator are tenants of their own.
 """
 
 from __future__ import annotations
 
+import contextlib
 import re
 import secrets
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import structlog
+from argus_cortex.gpu import GpuCoordinator
+from argus_cortex.gpu_wire import PriorityClass
 from argus_cortex.moderation import NudeNetClient, rule_letter
 from argus_cortex.moderation import policies as policy_table
 
-from argus_darkroom import __version__, depth
+from argus_darkroom import __version__, depth, gpu
 from argus_darkroom.age import AgeEstimator, AgeStatus, default_estimator
 from argus_darkroom.comfyui import ComfyUIClient, GenerationError, Progress
 from argus_darkroom.config import Settings
@@ -137,15 +145,21 @@ class Engine:
         nudenet: NudeNetClient | None = None,
         age: AgeEstimator | None = None,
         expander: OllamaExpander | None = None,
+        gpu_coordinator: GpuCoordinator | None = None,
     ) -> None:
         self.settings = settings
         self.guard = guard or Guard(settings.singguard_url, settings.thinking)
         self.store = store or RecordStore(settings.output_root)
         self.comfyui = comfyui or ComfyUIClient(settings.comfyui_url)
+        # ComfyUI on the nodes the GPU broker sent work to, by base URL, so a purge can reach every one of them.
+        self._comfyui_at: dict[str, ComfyUIClient] = {}
+        self._comfyui_lock = threading.Lock()
+        # ARGUS_GPU_COORDINATOR, host-wide; unset is no gating.
+        self.gpu = gpu_coordinator or gpu.default_coordinator()
         self.models = models or ModelLibrary(settings.models_root)
         # A template that could write before the verdict is refused here, at load, not when it runs.
         self.workflows = workflows or (load_workflows(settings.workflow) if settings.workflow else None)
-        self._outputs_verified: set[str] = set()
+        self._outputs_verified: set[tuple[str, str]] = set()  # (ComfyUI base URL, workflow sha256)
         if nudenet is None and settings.nudenet_url:
             nudenet = NudeNetClient(settings.nudenet_url)
         if age is None:
@@ -360,12 +374,16 @@ class Engine:
         on_progress: Progress | None = None,
         prepared: Prepared | None = None,
         input_scan: InputScanRecord | None = None,
+        priority: PriorityClass = gpu.DEFAULT_PRIORITY,
     ) -> Rendered:
         """Generate the image for *request* and hold the PNG in memory.
 
         Call it only after pre-flight let the request through, and after an input image passed its scan
         (:meth:`check_input`). The final prompt is the one that was checked: it is built by :meth:`final_prompt`, the
         same function pre-flight used.
+
+        The render holds a GPU lease on ``comfyui`` at *priority*, waiting for it first, and goes to the ComfyUI the
+        lease names. A lease that is refused or not granted in time is a :class:`GenerationError` like any other.
 
         Raises :class:`RequestError` (nothing was sent to ComfyUI) or :class:`GenerationError`.
         """
@@ -377,15 +395,72 @@ class Engine:
             # the same rule: an input image reaches ComfyUI only after its own scan passed.
             raise RequestError("an input image is rendered only after its scan passed (Engine.check_input)")
 
-        self._verify_outputs(workflow)
         graph = render(workflow, self._params(request, prepared, self.final_prompt(request, expanded_prompt)))
-        result = self.comfyui.render(graph, workflow.save_node_id, on_progress)
+        with self._comfyui_lease(gpu.GENERATE, workflow.name, priority) as comfyui:
+            self._verify_outputs(workflow, comfyui)
+            result = comfyui.render(graph, workflow.save_node_id, on_progress)
+            engine_version = comfyui.engine_version()
         return Rendered(
             image=result.image,
-            request=self._prepared_record(
-                request, enforcing, expanded_prompt, prepared, engine_version=self.comfyui.engine_version()
-            ),
+            request=self._prepared_record(request, enforcing, expanded_prompt, prepared, engine_version=engine_version),
         )
+
+    # -- GPU leases -------------------------------------------------------------------------------------
+
+    def comfyui_clients(self) -> list[ComfyUIClient]:
+        """The configured ComfyUI and every other one the GPU broker has sent work to."""
+        with self._comfyui_lock:
+            return [self.comfyui, *self._comfyui_at.values()]
+
+    def _comfyui_for(self, base_url: str | None) -> ComfyUIClient:
+        """The ComfyUI at the URL a lease named; the configured one when it named none."""
+        if not base_url or base_url.strip().rstrip("/") == self.comfyui.base_url:
+            return self.comfyui
+        key = base_url.strip().rstrip("/")
+        with self._comfyui_lock:
+            client = self._comfyui_at.get(key)
+            if client is None:
+                try:
+                    client = ComfyUIClient(key, timeout=self.comfyui.timeout, http_timeout=self.comfyui.http_timeout)
+                except ValueError as exc:
+                    raise GenerationError(f"the GPU broker named an unusable ComfyUI URL: {exc}") from exc
+                self._comfyui_at[key] = client
+        return client
+
+    @contextlib.contextmanager
+    def _comfyui_lease(self, footprint: gpu.Footprint, caller: str, priority: PriorityClass) -> Iterator[ComfyUIClient]:
+        """Hold a GPU lease on ``comfyui`` for the body, and give it the ComfyUI to call.
+
+        A lease that is refused or not granted (:data:`gpu.LEASE_ERRORS`) is a :class:`GenerationError`.
+        """
+        try:
+            with self.gpu.lease(
+                caller=caller,
+                min_vram_mb=footprint.vram_mb,
+                model_mb=footprint.model_mb,
+                kind=footprint.kind,
+                target=gpu.TARGET_COMFYUI,
+                priority=priority,
+            ) as lease:
+                yield self._comfyui_for(lease.base_url)
+        except gpu.LEASE_ERRORS as exc:
+            raise GenerationError(gpu.lease_failure(exc)) from exc
+
+    def _expand(self, prompt: str, priority: PriorityClass) -> str:
+        """Expand *prompt* under a GPU lease on ``ollama:<model>``. Raises :class:`ExpansionError`."""
+        assert self.expander is not None
+        try:
+            with self.gpu.lease(
+                caller=self.expander.model,
+                min_vram_mb=gpu.EXPAND.vram_mb,
+                model_mb=gpu.EXPAND.model_mb,
+                kind=gpu.EXPAND.kind,
+                target=gpu.ollama_target(self.expander.model),
+                priority=priority,
+            ) as lease:
+                return self.expander.expand(prompt, base_url=lease.base_url)
+        except gpu.LEASE_ERRORS as exc:
+            raise ExpansionError(gpu.lease_failure(exc)) from exc
 
     def _prepared_record(
         self,
@@ -408,35 +483,42 @@ class Engine:
             init_image=prepared.init_ref,
         )
 
-    def _verify_outputs(self, workflow: Workflow) -> None:
-        """Ask ComfyUI which of the workflow's nodes are output nodes, once per workflow.
+    def _verify_outputs(self, workflow: Workflow, comfyui: ComfyUIClient) -> None:
+        """Ask *comfyui* which of the workflow's nodes are output nodes, once per workflow and ComfyUI.
 
-        The load-time check goes by node names. This one catches a node that writes but is not named like it.
+        The load-time check goes by node names. This one catches a node that writes but is not named like it. Each
+        ComfyUI is asked on its own: another node may have other custom nodes installed under the same names.
         """
-        if workflow.sha256 in self._outputs_verified:
+        key = (comfyui.base_url, workflow.sha256)
+        if key in self._outputs_verified:
             return
-        others = sorted(c for c, is_output in self.comfyui.output_classes(workflow.class_types).items() if is_output)
+        others = sorted(c for c, is_output in comfyui.output_classes(workflow.class_types).items() if is_output)
         others = [c for c in others if c != SAVE_NODE]
         if others:
             raise GenerationError(
                 f"the workflow has output node(s) other than {SAVE_NODE}: {', '.join(others)}; "
                 "nothing may be written before the verdict"
             )
-        self._outputs_verified.add(workflow.sha256)
+        self._outputs_verified.add(key)
 
     # -- depth maps ------------------------------------------------------------------------------------
 
-    def depth(self, record: GenerationRecord, image: bytes) -> tuple[depth.DepthMap, DepthRecord]:
+    def depth(
+        self, record: GenerationRecord, image: bytes, priority: PriorityClass = gpu.DEFAULT_PRIORITY
+    ) -> tuple[depth.DepthMap, DepthRecord]:
         """A depth map of *record*'s stored image, whose bytes are *image*. Writes nothing: the caller stores it.
 
         No pre-flight and no scan: the image was already judged and released, and no prompt is involved (see
-        :mod:`argus_darkroom.depth`). Raises :class:`GenerationError`.
+        :mod:`argus_darkroom.depth`). The render holds a GPU lease like a generation's. Raises
+        :class:`GenerationError`.
         """
         if record.image is None:
             raise GenerationError("the record has no image")
-        self._verify_outputs(depth.WORKFLOW)
         try:
-            result = self.comfyui.render(depth.graph(image), depth.WORKFLOW.save_node_id)
+            with self._comfyui_lease(gpu.DEPTH, depth.WORKFLOW_NAME, priority) as comfyui:
+                self._verify_outputs(depth.WORKFLOW, comfyui)
+                result = comfyui.render(depth.graph(image), depth.WORKFLOW.save_node_id)
+                engine_version = comfyui.engine_version()
             found = depth.to_depth_png(result.image, record.image.width, record.image.height)
         except GenerationError as exc:
             raise GenerationError(_scrub(str(exc))[:_REASON_MAX]) from exc
@@ -449,7 +531,7 @@ class Engine:
             width=found.width,
             height=found.height,
             workflow=depth.WORKFLOW_NAME,
-            engine_version=self.comfyui.engine_version(),
+            engine_version=engine_version,
         )
 
     # -- the input image -------------------------------------------------------------------------------
@@ -510,7 +592,9 @@ class Engine:
 
     # -- the whole flow ---------------------------------------------------------------------------------
 
-    def generate(self, request: GenerateRequest, emit: Emit | None = None) -> GenerationRecord:
+    def generate(
+        self, request: GenerateRequest, emit: Emit | None = None, priority: PriorityClass = gpu.DEFAULT_PRIORITY
+    ) -> GenerationRecord:
         """One guarded generation. Returns the record, whatever the outcome; never an image.
 
         1. pre-flight (text only): a refusal is recorded and nothing is generated;
@@ -519,12 +603,16 @@ class Engine:
         4. scan, decide;
         5. release (write, for passed and review) or destroy (write nothing).
 
+        *priority* is the GPU lease class for the expansion and the render (the caller's ``X-Argus-Priority``).
+
         Raises :class:`RequestError` (HTTP 400) before anything happens when the request cannot be served.
         """
 
-        return self.begin(request)(emit)
+        return self.begin(request, priority)(emit)
 
-    def begin(self, request: GenerateRequest) -> Callable[[Emit | None], GenerationRecord]:
+    def begin(
+        self, request: GenerateRequest, priority: PriorityClass = gpu.DEFAULT_PRIORITY
+    ) -> Callable[[Emit | None], GenerationRecord]:
         """Validate *request* and fix everything that can fail on its own account, then return the run.
 
         Splitting it from the run lets a server answer HTTP 400 before it opens a stream. Raises
@@ -536,9 +624,11 @@ class Engine:
         if request.expand and self.expander is None:
             raise RequestError("prompt expansion is not configured (ARGUS_DARKROOM_OLLAMA_URL and _OLLAMA_MODEL)")
         prepared = self.prepare(request)
-        return lambda emit=None: self._run(request, prepared, emit)
+        return lambda emit=None: self._run(request, prepared, emit, priority)
 
-    def _run(self, request: GenerateRequest, prepared: Prepared, emit: Emit | None) -> GenerationRecord:
+    def _run(
+        self, request: GenerateRequest, prepared: Prepared, emit: Emit | None, priority: PriorityClass
+    ) -> GenerationRecord:
         def send(kind: str, data: dict) -> None:
             # A listener that fails (a client that hung up) must not cost the record: the run goes on.
             if emit:
@@ -557,7 +647,7 @@ class Engine:
         if request.expand:
             assert self.expander is not None  # begin() checked
             try:
-                expanded = self.expander.expand(request.user_prompt)
+                expanded = self._expand(request.user_prompt, priority)
             except ExpansionError as exc:
                 record = self._save(
                     GenerationRecord(
@@ -617,6 +707,7 @@ class Engine:
                 lambda step, total: send("progress", {"step": step, "total": total}),
                 prepared,
                 guard_record.input,
+                priority,
             )
             image = describe(rendered.image)
         except (GenerationError, UnreadableImage) as exc:

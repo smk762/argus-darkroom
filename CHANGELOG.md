@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GPU leases from argus-iris** (#53). Each render and depth map holds a lease on `comfyui` and each prompt expansion
+  one on `ollama:<model>`, through argus-cortex's coordinator (`ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_BROKER_URL`,
+  `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST`, `ARGUS_GPU_BROKER_FALLBACK`; unset gates nothing, as before).
+  The work goes to the URL a grant names, else darkroom's own. The priority class comes from the caller's
+  `X-Argus-Priority` (`interactive` by default; mint's sample runs send `batch`), or `generate --priority`.
+- With the broker, up to 8 generations and depth runs are in flight at once, each waiting for its lease, so a second
+  generation queues behind iris instead of getting a 409. Without it, one at a time as before. A purge still waits
+  for none to run.
+- `gpu-tenant.yaml`, validated by cortex's `TenantManifest`: kinds `generate` and `depth` on `comfyui`, `expand` on
+  Ollama. The image ships it at `/app/gpu-tenant.yaml`, compose's default manifest path.
+- `/health` gains `gpu` (`coordinator`, `in_flight`, `limit`).
+- A refused lease, one not granted in time, or a broker error is a `failed` record that says so. Nothing retries it as
+  an OOM.
+
 - **Depth maps** (for argus-mask's plate backdrops). `POST /depth/{id}` makes a depth map of a record's stored image
   with Depth Anything V2 Small (Apache-2.0) and returns the record's new `depth`; `GET /depth/{id}` serves it as an
   8-bit greyscale PNG at the image's size, near bright and far dark, min to max, no metadata. Idempotent; shares the
@@ -36,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `record_version` stays 1.0; the wire schema is regenerated.
 - The age estimators keep curator's matched person boxes (`HttpAgeEstimator.read`, `CuratorAgeEstimator.read`).
   `estimate` still returns the faces alone.
+
+### Changed
+
+- argus-cortex `>=0.6,<0.7`, with the `[remote]` (broker client) and `[yaml]` (manifest) extras.
+- argus-curator `>=0.16,<0.17` for the `[age]` extra and the tests: 0.16 is the first curator on cortex 0.6
+  (argus-curator#157). Curator 0.15 and later carry more face measurements; darkroom reads only the age estimates and
+  boxes, so nothing else changes.
 
 ### Fixed
 

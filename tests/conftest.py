@@ -14,6 +14,12 @@ from fakes import FakeNudeNet, FakeOllama, FakeSingGuard  # noqa: E402
 from rig import Rig  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def no_gpu_broker(monkeypatch) -> None:
+    """A host's ARGUS_GPU_* must not reach the tests: an engine built without a coordinator gates nothing."""
+    monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
+
+
 @pytest.fixture
 def singguard() -> Iterator[FakeSingGuard]:
     with FakeSingGuard() as fake:

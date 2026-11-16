@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.client import HTTPException
 
@@ -56,7 +57,13 @@ class OllamaExpander:
     def info(self) -> Expansion:
         return Expansion(model=self.model, system_prompt_sha256=SYSTEM_PROMPT_SHA256)
 
-    def expand(self, prompt: str) -> str:
+    def expand(self, prompt: str, base_url: str | None = None) -> str:
+        """Expand *prompt*. *base_url* is the Ollama a GPU lease named; ``None`` is the configured one."""
+        url = self.url
+        if base_url:
+            if urllib.parse.urlsplit(base_url.strip()).scheme not in {"http", "https"}:
+                raise ExpansionError("the GPU broker named an Ollama URL that is not http(s)")
+            url = base_url.strip().rstrip("/") + "/api/chat"
         body = {
             "model": self.model,
             "stream": False,
@@ -64,7 +71,7 @@ class OllamaExpander:
             "options": {"num_predict": 400},
         }
         req = urllib.request.Request(
-            self.url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST"
+            url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}, method="POST"
         )
         try:
             with _OPENER.open(req, timeout=self.timeout) as resp:

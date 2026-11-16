@@ -43,6 +43,8 @@ RUN uv pip install --system --no-cache "certifi>=2026.10.19" "$(ls /wheel/*.whl)
 # The example workflows are the default set, one per checkpoint family and LoRA count. Mount your own file or
 # directory and set ARGUS_DARKROOM_WORKFLOW to use it.
 COPY examples ./examples
+# The argus-iris tenant manifest; compose points ARGUS_GPU_TENANT_MANIFEST here.
+COPY gpu-tenant.yaml ./gpu-tenant.yaml
 ENV ARGUS_DARKROOM_OUTPUT_ROOT=/data \
     ARGUS_DARKROOM_MODELS_ROOT=/models \
     ARGUS_DARKROOM_WORKFLOW=/app/examples/workflows
