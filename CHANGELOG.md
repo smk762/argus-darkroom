@@ -53,9 +53,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- argus-cortex `>=0.6,<0.7`, with the `[remote]` (broker client) and `[yaml]` (manifest) extras. argus-curator 0.14
-  still pins cortex `<0.5`, so `pyproject.toml` carries a temporary uv override until curator ships cortex 0.6
-  (argus-curator#155).
+- argus-cortex `>=0.6,<0.7`, with the `[remote]` (broker client) and `[yaml]` (manifest) extras.
+- argus-curator `>=0.16,<0.17` for the `[age]` extra and the tests: 0.16 is the first curator on cortex 0.6
+  (argus-curator#157). Curator 0.15 and later carry more face measurements; darkroom reads only the age estimates and
+  boxes, so nothing else changes.
 
 ### Fixed
 
