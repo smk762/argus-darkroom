@@ -147,6 +147,7 @@ def test_a_refused_lease_is_a_failed_record_and_nothing_reaches_comfyui(rig) -> 
     assert rig.comfyui.graphs == []
     assert list(rig.out.glob("*.png")) == []
     assert record.guard.preflight  # pre-flight ran before the lease was asked for
+    assert len(coordinator.calls) == 1  # asked once: a refusal is a failed record, never retried like an OOM
 
 
 def test_an_expansion_lease_that_times_out_is_a_failed_expansion(rig, ollama) -> None:
