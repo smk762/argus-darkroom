@@ -245,6 +245,20 @@ def test_models_skips_the_parts_of_a_diffusers_folder(tmp_path) -> None:
     assert ModelLibrary(tmp_path).names("checkpoint") == ["sdxl/a/a.safetensors", "whole.safetensors"]
 
 
+def test_models_lists_only_names_that_can_be_used(tmp_path) -> None:
+    store, root = tmp_path / "shared", tmp_path / "models" / "loras"
+    store.mkdir()
+    root.mkdir(parents=True)
+    (store / "outside.safetensors").write_bytes(b"x")
+    (root / "inside.safetensors").write_bytes(b"y")
+    (root / "linked.safetensors").symlink_to(store / "outside.safetensors")  # leaves the folder: path() refuses it
+    (root / "alias.safetensors").symlink_to(root / "inside.safetensors")  # stays inside: usable
+    library = ModelLibrary(tmp_path / "models")
+    assert library.names("lora") == ["alias.safetensors", "inside.safetensors"]
+    for name in library.names("lora"):
+        library.path("lora", name)
+
+
 def test_models_without_comfyui_still_lists_the_files(rig) -> None:
     c = client(rig)
     c.app.state.engine.comfyui = ComfyUIClient("http://127.0.0.1:1", timeout=1)
