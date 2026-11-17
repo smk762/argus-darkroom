@@ -27,7 +27,7 @@ import argparse
 import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -90,17 +90,16 @@ def score_all(items: list[Item], url: str, field: str, workers: int, retries: in
             print(f"{field}: {url} runs {info().model or 'an unnamed model'}", file=sys.stderr)
         except CheckFailed as exc:
             print(f"{field}: {url} did not say which model it runs ({exc})", file=sys.stderr)
-    done = 0
 
     def one(item: Item) -> None:
-        nonlocal done
         setattr(item, field, score(client, item.path, retries, wait))
-        done += 1
-        if done % 50 == 0:
-            print(f"{field}: {done}/{len(items)}", file=sys.stderr)
 
     with ThreadPoolExecutor(workers) as pool:
-        list(pool.map(one, items))
+        # Progress is counted here, in one thread, as each finishes: no counter shared between the workers.
+        for done, future in enumerate(as_completed([pool.submit(one, item) for item in items]), 1):
+            future.result()
+            if done % 50 == 0:
+                print(f"{field}: {done}/{len(items)}", file=sys.stderr)
 
 
 def agreement(pairs: list[tuple[bool, float]], cutoff: float) -> tuple[int, int, int]:
