@@ -341,3 +341,15 @@ def test_overlap_ignores_detections_under_the_floor() -> None:
 def test_enforcing_policy_must_have_cells() -> None:
     with pytest.raises(ValueError, match="enforcing"):
         decide("adult", CLEAN, 0.0)
+
+
+@pytest.mark.parametrize("years", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("rule", ["frame", "overlap"])
+def test_a_non_finite_estimate_is_no_evidence_of_an_adult(years: float, rule: str) -> None:
+    # NaN < 18 is False: read as a number, a NaN face would pass as an adult and the rule would not fire.
+    assert minor_exposed(faces(years), 0.6, exposed(ON_NOBODY), rule)
+
+
+def test_overlap_a_person_with_no_estimate_and_no_face_counts_as_young() -> None:
+    age = AgeRecord(faces=[FaceAge(age_estimate_years=40, bbox=RIGHT_FACE)], people=[PersonAge(bbox=LEFT)])
+    assert overlap(age, exposed(ON_LEFT))

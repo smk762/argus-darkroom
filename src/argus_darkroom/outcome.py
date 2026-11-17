@@ -14,6 +14,7 @@ Order of precedence (deletion rules win over everything):
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -55,15 +56,24 @@ def overlaps(a: Sequence[float], b: Sequence[float]) -> bool:
 
 
 def _young(years: float | None) -> bool:
-    return years is not None and years < ADULT_AGE
+    """Under 18, or a non-finite reading, which is no evidence of an adult (``NaN < 18`` is False).
+
+    ``None`` is not young here: on a matched person it means the age is on the face (see :func:`_young_person`).
+    """
+    return years is not None and (not math.isfinite(years) or years < ADULT_AGE)
 
 
 def _young_person(age: AgeRecord, person: PersonAge) -> bool:
-    """A person is young on its own estimate or its matched face's (curator puts a matched age on the face)."""
+    """A person is young on its own estimate or its matched face's (curator puts a matched age on the face).
+
+    A person with neither (no estimate and no face to borrow one from) could be a minor, so counts as young.
+    """
     if _young(person.age_estimate_years):
         return True
     i = person.face_index
-    return i is not None and 0 <= i < len(age.faces) and _young(age.faces[i].age_estimate_years)
+    if i is not None and 0 <= i < len(age.faces):
+        return _young(age.faces[i].age_estimate_years)
+    return person.age_estimate_years is None
 
 
 def _faceless_estimates(age: AgeRecord) -> set[tuple[float, tuple[float, float, float, float]]]:
@@ -121,7 +131,7 @@ def minor_exposed(
         return False
     if rule == "overlap":
         return _overlap_rule(age, detections)
-    return any(face.age_estimate_years < ADULT_AGE for face in age.faces)
+    return any(_young(face.age_estimate_years) for face in age.faces)
 
 
 def _cells(scans: dict[str, ScanCells]) -> list[tuple[str, str, Cell]]:
