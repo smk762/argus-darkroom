@@ -47,6 +47,9 @@ class Settings:
     allow_nsfw: bool = False
     devmode: bool = False
     read_only: bool = False  # refuse every write; /health reports it
+    # The demo server (demo/run.py, fake backends). Set only there, never from the environment, so a client can tell
+    # the demo from a server that renders on a GPU: a test that generates checks /health before it sends anything.
+    demo: bool = False
     # Origins allowed to read and, if named, to write. ``*`` allows anonymous reads from anywhere, never writes.
     cors_origins: tuple[str, ...] = LOCAL_ORIGINS
 

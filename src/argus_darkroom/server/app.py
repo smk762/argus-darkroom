@@ -274,6 +274,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "workflows": engine.workflows.names if engine.workflows else [],
             "devmode": cfg.devmode,
             "read_only": cfg.read_only,
+            # True only for demo/run.py's fake backends: nothing it "generates" touches a GPU.
+            "demo": cfg.demo,
             "generating": busy.locked(),
             # ARGUS_GPU_COORDINATOR (none, lease or broker); how many runs are in flight, and how many may be.
             "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
