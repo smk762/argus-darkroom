@@ -212,10 +212,39 @@ def test_an_unknown_priority_header_is_a_400_and_frees_the_gate(rig) -> None:
     assert coordinator.calls == [] and not c.app.state.busy.locked()
 
 
-def test_without_the_broker_a_second_generation_is_still_a_409(rig) -> None:
-    c = TestClient(create_app(rig.engine(gpu_coordinator=Recording(name="lease"))))
-    health = c.get("/health").json()
-    assert health["gpu"] == {"coordinator": "lease", "in_flight": 0, "limit": 1}
+@pytest.mark.parametrize("coordinator", [None, "lease"])
+def test_without_the_broker_a_second_generation_is_still_a_409(tmp_path, singguard, nudenet, coordinator) -> None:
+    """The default local coordinator, or a lease that does not queue: one generation at a time."""
+    started, release = threading.Event(), threading.Event()
+
+    def slow(fake, pid, graph):
+        started.set()
+        release.wait(10)
+        return [
+            event("executing", node="9", prompt_id=pid),
+            b"\x00\x00\x00\x01\x00\x00\x00\x02" + fake.png,
+            event("executing", node=None, prompt_id=pid),
+        ]
+
+    with FakeComfyUI(slow) as comfyui:
+        rig = Rig(tmp_path, singguard, comfyui, nudenet)
+        kw = {} if coordinator is None else {"gpu_coordinator": Recording(name=coordinator)}
+        c = TestClient(create_app(rig.engine(**kw)))
+        assert c.get("/health").json()["gpu"]["limit"] == 1
+        results: list = []
+        first = threading.Thread(target=lambda: results.append(stream_events(c)))
+        first.start()
+        try:
+            assert started.wait(10)  # the first run holds the GPU, inside ComfyUI
+            assert c.get("/health").json()["gpu"]["in_flight"] == 1
+            r = c.post("/generate/stream", json=BODY)
+            assert r.status_code == 409 and "already running" in r.json()["detail"]
+        finally:
+            release.set()
+            first.join(10)
+        assert results[0][-1][1]["record"]["outcome"] == "passed"
+        assert c.get("/health").json()["gpu"]["in_flight"] == 0
+        assert not c.app.state.busy.locked()
 
 
 def test_with_the_broker_generations_queue_instead_of_a_409(tmp_path, singguard, nudenet) -> None:

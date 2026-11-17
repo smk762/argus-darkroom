@@ -130,7 +130,8 @@ def test_a_failed_check_is_a_refusal_recorded_as_unchecked(singguard, tmp_path, 
 
 def test_an_unreachable_singguard_refuses(tmp_path) -> None:
     eng = Engine(Settings(singguard_url="http://127.0.0.1:1", output_root=tmp_path))
-    assert eng.preflight(GenerateRequest(user_prompt="x")).reason == "unchecked"
+    result = eng.preflight(GenerateRequest(user_prompt="x"))
+    assert (result.refused, result.verdict, result.reason) == (True, "refused", "unchecked")
 
 
 def test_an_unchecked_advisory_policy_does_not_refuse(singguard, tmp_path) -> None:

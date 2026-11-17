@@ -93,7 +93,9 @@ IMAGE_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"RIFF", b"GIF8", b"BM", b"II*\x00",
 
 
 def tracked() -> list[str]:
-    return subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
+    # NUL-separated and never quoted: a path with a space, a newline or a non-ASCII character comes back whole.
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True, text=True, check=True).stdout
+    return [p for p in out.split("\0") if p]
 
 
 def test_no_image_video_or_model_file_is_tracked() -> None:

@@ -114,7 +114,13 @@ class FakeNudeNet:
                 self.wfile.write(data)
 
             def do_POST(self) -> None:
-                fake.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path != "/infer":  # as the real server: a client posting elsewhere gets no detections
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                fake.bodies.append(body)
                 fake.calls += 1
                 detections = [{"class": c, "score": s, "box": fake.box} for c, s in fake.labels.items()]
                 data = json.dumps({"success": True, "prediction": [detections]}).encode()

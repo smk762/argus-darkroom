@@ -31,6 +31,13 @@ def depth_runs(rig) -> int:
     return sum(1 for g in rig.comfyui.graphs if is_depth(g))
 
 
+def make_depth(c, rig, record_id: str) -> None:
+    """Make the depth map, and check it is there, so a test of its removal cannot pass on one never made."""
+    assert c.post(f"/depth/{record_id}").status_code == 200
+    assert (rig.out / f"{record_id}.depth.png").is_file()
+    assert c.get(f"/depth/{record_id}").status_code == 200
+
+
 def test_post_makes_the_depth_map_and_get_serves_it(rig) -> None:
     c = client(rig)
     record = generate(c)
@@ -205,7 +212,7 @@ def test_read_only_and_cross_site_refuse_a_depth_run(rig) -> None:
 def test_removing_the_image_removes_the_depth_map(rig) -> None:
     c = client(rig)
     record = generate(c)
-    c.post(f"/depth/{record['id']}")
+    make_depth(c, rig, record["id"])
     removed = c.delete(f"/record/{record['id']}").json()
     assert removed["depth"] is None
     assert not (rig.out / f"{record['id']}.depth.png").exists()
@@ -215,7 +222,7 @@ def test_removing_the_image_removes_the_depth_map(rig) -> None:
 def test_purging_one_record_removes_its_depth_map(rig) -> None:
     c = client(rig, devmode=True)
     record = generate(c)
-    c.post(f"/depth/{record['id']}")
+    make_depth(c, rig, record["id"])
     r = c.post(f"/purge/{record['id']}", json={"confirm": "purge"})
     assert r.json() == {"records": 1, "images": 1}
     assert list(rig.out.iterdir()) == []
@@ -224,7 +231,7 @@ def test_purging_one_record_removes_its_depth_map(rig) -> None:
 def test_purge_removes_every_depth_map(rig) -> None:
     c = client(rig, devmode=True)
     record = generate(c)
-    c.post(f"/depth/{record['id']}")
+    make_depth(c, rig, record["id"])
     r = c.post("/purge", json={"confirm": "purge"})
     assert r.json() == {"records": 1, "images": 1, "comfyui_history": 0}
     assert list(rig.out.iterdir()) == []
