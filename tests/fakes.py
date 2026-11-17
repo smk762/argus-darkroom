@@ -150,7 +150,7 @@ class FakeFaces:
         people: list[dict] | None = None,
         people_check: str | None = None,
         people_error: str | None = None,
-        health: dict | None = None,
+        health: dict | bytes | None = None,
         status: int = 200,
         health_status: int = 200,
     ) -> None:
@@ -167,7 +167,8 @@ class FakeFaces:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                data = json.dumps(fake.health).encode()
+                health = fake.health
+                data = health if isinstance(health, bytes) else json.dumps(health).encode()
                 self.send_response(fake.health_status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

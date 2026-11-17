@@ -191,3 +191,44 @@ def test_remote_status_server_error_is_unavailable_whatever_the_body() -> None:
         status = remote_age_status(fake.url)
     assert not status.available
     assert "503" in (status.reason or "")
+
+
+def test_a_people_list_without_an_ok_check_is_not_none_found() -> None:
+    # An empty list with no ``people_check`` never vouched that the body pass ran: a faceless minor could be there.
+    with FakeFaces(people=[]) as fake, pytest.raises(AgeUnavailable, match="people check None"):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+    # With no list at all, the record says only faces were read.
+    with FakeFaces() as fake:
+        assert HttpAgeEstimator(fake.url).read(b"x").people == []
+
+
+def test_an_age_too_large_for_a_float_is_no_estimate() -> None:
+    face = {"age_estimate_years": 10**400, "bbox": [1, 2, 3, 4]}
+    with FakeFaces(faces=[face]) as fake, pytest.raises(AgeUnavailable, match="without an estimate"):
+        HttpAgeEstimator(fake.url).estimate(b"x")
+
+
+def test_remote_status_body_in_no_utf_encoding_is_not_curator() -> None:
+    with FakeFaces(health=b"\x80\x81 not json") as fake:
+        status = remote_age_status(fake.url)
+    assert not status.available
+    assert status.reason == "AGE_URL /health was not curator faces"
+
+
+@pytest.mark.parametrize("code", [404, 503])
+def test_remote_status_closes_an_http_error_response(monkeypatch, code) -> None:
+    import io
+    import urllib.error
+
+    from argus_darkroom import age
+
+    body = io.BytesIO(b"{}")
+    raised = []  # held here, so garbage collection cannot be what closes it
+
+    def refuse(url, timeout):
+        raised.append(urllib.error.HTTPError(url, code, "no", {}, body))
+        raise raised[-1]
+
+    monkeypatch.setattr(age._OPENER, "open", refuse)
+    assert not remote_age_status("http://curator").available
+    assert body.closed
