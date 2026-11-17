@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `/health` reports `demo`: true only for `make demo` (`demo/run.py`, fake backends), never set from the environment.
+  A client test that generates (safelight's workflow contract test) refuses any server that does not say it is the
+  demo, so it never renders on a GPU (smk762/argus-safelight#58).
 - `scripts/nudenet_compare.py` (#54), run by hand: scores darkroom's stored images (`--records`) and/or a hand-sorted
   `blur/`/`clear/` folder (`--labelled`) on an old and a new NudeNet server, and sweeps the new one's cutoff against
   the old 0.2 (`EXPOSED_FLOOR`, `DEFAULT_NSFW_THRESHOLD`). Reports names and scores, never image bytes.

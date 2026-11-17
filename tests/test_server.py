@@ -77,6 +77,7 @@ def test_health(rig) -> None:
     assert body["default_policy"] == "default" and body["thinking"] == "cascade" and body["generating"] is False
     assert body["nsfw_allowed"] is False and body["devmode"] is False and body["sfw_available"] is True
     assert body["read_only"] is False
+    assert body["demo"] is False
     assert body["policies"] == list(policy_table.POLICIES)
     assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
@@ -893,3 +894,12 @@ def test_a_mask_with_no_inpaint_template_is_a_400(rig) -> None:
     r = c.post("/generate/stream", json=BODY | {"init_image": inpaint_init()})
     assert r.status_code == 400 and "no inpainting workflow" in r.json()["detail"]
     assert not c.app.state.busy.locked()
+
+
+def test_demo_is_on_health_only_when_the_demo_sets_it(rig, monkeypatch) -> None:
+    assert client(rig).get("/health").json()["demo"] is False
+    assert client(rig, demo=True).get("/health").json()["demo"] is True
+    # A server cannot be talked into claiming it is the demo from its environment.
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
+    monkeypatch.setenv("ARGUS_DARKROOM_DEMO", "1")
+    assert Settings.from_env().demo is False
