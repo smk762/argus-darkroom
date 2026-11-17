@@ -232,3 +232,16 @@ def test_remote_status_closes_an_http_error_response(monkeypatch, code) -> None:
     monkeypatch.setattr(age._OPENER, "open", refuse)
     assert not remote_age_status("http://curator").available
     assert body.closed
+
+
+def test_a_blank_setting_keeps_its_default(monkeypatch) -> None:
+    # Compose's ``VAR=${VAR:-}`` sets a variable to "": that must not become an empty URL or checkpoint name.
+    monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", "http://guard:9150")
+    for name in ("COMFYUI_URL", "DEFAULT_CHECKPOINT", "THINKING"):
+        monkeypatch.setenv(f"ARGUS_DARKROOM_{name}", "  ")
+    settings = Settings.from_env()
+    assert (settings.comfyui_url, settings.default_checkpoint, settings.thinking) == (
+        "http://localhost:8188",
+        "sdxl",
+        "cascade",
+    )

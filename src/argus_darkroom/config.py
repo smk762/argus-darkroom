@@ -82,24 +82,25 @@ class Settings:
     def from_env(cls) -> Settings:
         """Read ``os.environ``. Flags go through cortex's ``env_flag``, which warns about a mistyped value."""
 
-        def get(name: str, default: str = "") -> str:
-            return os.environ.get(PREFIX + name, default).strip()
+        def get(name: str) -> str:
+            """The value, or "" when unset or blank (``VAR=${VAR:-}`` in compose): a blank never beats a default."""
+            return os.environ.get(PREFIX + name, "").strip()
 
         allow_nsfw = env_flag(PREFIX + "ALLOW_NSFW")
         defaults = cls.__dataclass_fields__
         return cls(
             singguard_url=get("SINGGUARD_URL"),
-            comfyui_url=get("COMFYUI_URL", defaults["comfyui_url"].default),
+            comfyui_url=get("COMFYUI_URL") or defaults["comfyui_url"].default,
             ollama_url=get("OLLAMA_URL"),
             ollama_model=get("OLLAMA_MODEL"),
             nudenet_url=get("NUDENET_URL"),
             age_url=get("AGE_URL"),
             minor_exposed=get("MINOR_EXPOSED") or defaults["minor_exposed"].default,
             policy=get("POLICY") or ("adult-granular" if allow_nsfw else "default"),
-            thinking=get("THINKING", "cascade"),
+            thinking=get("THINKING") or defaults["thinking"].default,
             output_root=Path(get("OUTPUT_ROOT") or "darkroom-output"),
             models_root=Path(p) if (p := get("MODELS_ROOT")) else None,
-            default_checkpoint=get("DEFAULT_CHECKPOINT", defaults["default_checkpoint"].default),
+            default_checkpoint=get("DEFAULT_CHECKPOINT") or defaults["default_checkpoint"].default,
             workflow=Path(p) if (p := get("WORKFLOW")) else None,
             allow_nsfw=allow_nsfw,
             devmode=env_flag(PREFIX + "DEVMODE"),
