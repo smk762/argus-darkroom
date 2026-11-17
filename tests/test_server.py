@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import threading
+import time
 import zipfile
 from dataclasses import replace
 
@@ -640,15 +641,25 @@ def test_a_removal_in_flight_cannot_bring_back_a_purged_record(rig, monkeypatch,
 
     def paused_load(record_id: str):
         found = load(record_id)
-        loaded.set()
-        resume.wait(5)
+        if not loaded.is_set():  # only the removal's read pauses: any later load (the purge's) goes straight through
+            loaded.set()
+            resume.wait(5)
         return found
 
+    answers: dict[str, object] = {}
+
+    def keep(name: str, call, *args, **kwargs):
+        def run() -> None:
+            try:
+                answers[name] = call(*args, **kwargs).status_code
+            except BaseException as exc:  # a thread's exception would otherwise only be printed
+                answers[name] = exc
+
+        return threading.Thread(target=run)
+
     monkeypatch.setattr(store, "load", paused_load)
-    removal = threading.Thread(target=c.delete, args=(f"/record/{record['id']}",))
-    purge = threading.Thread(
-        target=c.post, args=(route.format(id=record["id"]),), kwargs={"json": {"confirm": "purge"}}
-    )
+    removal = keep("removal", c.delete, f"/record/{record['id']}")
+    purge = keep("purge", c.post, route.format(id=record["id"]), json={"confirm": "purge"})
     removal.start()
     assert loaded.wait(5)
     purge.start()
@@ -657,7 +668,34 @@ def test_a_removal_in_flight_cannot_bring_back_a_purged_record(rig, monkeypatch,
     removal.join(5)
     purge.join(5)
     assert not removal.is_alive() and not purge.is_alive()
+    # The purge waited for the removal, so both did their work; neither failed and left the other to do it.
+    assert answers == {"removal": 200, "purge": 200}
     assert not store.exists(record["id"])
+
+
+def test_a_waiting_purge_is_not_starved_by_new_runs() -> None:
+    from argus_darkroom.server.app import RunGate
+
+    gate = RunGate(limit=2)
+    assert gate.enter()
+    took = threading.Event()
+
+    def purge() -> None:
+        gate.acquire()
+        took.set()
+
+    waiter = threading.Thread(target=purge, daemon=True)
+    waiter.start()
+    deadline = time.monotonic() + 5
+    while not gate._waiting_exclusive and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not gate.enter()  # under the limit, but a purge is queued: no new run jumps it
+    gate.leave()
+    assert took.wait(5)
+    assert not gate.enter()
+    gate.release()
+    assert gate.enter()
+    gate.leave()
 
 
 def test_a_removal_is_not_refused_during_a_generation(rig) -> None:
