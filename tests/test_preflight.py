@@ -35,6 +35,15 @@ def test_trigger_words_are_not_repeated() -> None:
     assert assemble_prompt("a cat in SKS style", None, ["sks", "sks", " "]) == "a cat in SKS style"
 
 
+def test_a_trigger_inside_a_longer_word_is_still_appended() -> None:
+    assert assemble_prompt("a list of tasks", None, ["sks"]) == "a list of tasks, sks"
+    assert assemble_prompt("a party", None, ["art"]) == "a party, art"
+
+
+def test_a_trigger_differing_only_in_case_is_appended_once() -> None:
+    assert assemble_prompt("a cat", None, ["Foo", "foo", "FOO"]) == "a cat, Foo"
+
+
 def test_frame_labels_the_negative_prompt() -> None:
     text = frame("a portrait", "child, minor, underage")
     assert text == (
