@@ -7,6 +7,7 @@ generation from here is guarded exactly as one from the server is, and leaves th
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
@@ -38,14 +39,22 @@ def _engine():
 
 def _parse_loras(specs: list[str], triggers: list[str]) -> list[LoRASpec]:
     """``NAME`` or ``NAME:WEIGHT`` per ``--lora``. Trigger words belong to the first LoRA unless there are
-    several, in which case each ``--trigger`` is ``NAME=word`` (or ``NAME=word,word``)."""
+    several, in which case each ``--trigger`` is ``NAME=word`` (or ``NAME=word,word``).
+
+    Only a number after the last ``:`` is a weight, so a name with a colon in it (``civitai:12345``) is a name.
+    A weight must be finite."""
     loras: list[LoRASpec] = []
     for spec in specs:
-        name, _, weight = spec.rpartition(":") if ":" in spec else (spec, "", "")
+        name, sep, suffix = spec.rpartition(":")
         try:
-            loras.append(LoRASpec(name=name, weight=float(weight) if weight else 1.0))
-        except ValueError as exc:
-            raise typer.BadParameter(f"--lora {spec!r}: the weight after ':' must be a number") from exc
+            weight = float(suffix) if sep and name else None
+        except ValueError:
+            weight = None  # not a number: the colon is part of the name
+        if weight is None:
+            name, weight = spec, 1.0
+        if not math.isfinite(weight):
+            raise typer.BadParameter(f"--lora {spec!r}: the weight after ':' must be a finite number")
+        loras.append(LoRASpec(name=name, weight=weight))
     for trigger in triggers:
         name, sep, words = trigger.partition("=")
         if not sep:
