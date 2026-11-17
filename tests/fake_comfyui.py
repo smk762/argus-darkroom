@@ -93,7 +93,10 @@ class FakeComfyUI:
         self.history: dict[str, dict] = {}
         self.graphs: list[dict] = []
         self.calls: list[tuple[str, str]] = []
-        self.interrupted: list[str] = []
+        self.interrupted: list[str] = []  # prompt ids deleted from the queue
+        self.interrupts: list[dict] = []  # every POST /interrupt body
+        self.busy_with: str | None = None  # another client's prompt running: ours then wait in queue_pending
+        self.queued: list[str] = []  # our prompts not yet finished, deleted or interrupted
         self._conns: dict[str, object] = {}
         self._registered = threading.Condition()
         fake = self
@@ -113,6 +116,18 @@ class FakeComfyUI:
                     self._send(200, {"system": {"comfyui_version": fake.version}})
                 elif self.path == "/history":
                     self._send(200, fake.history)
+                elif self.path == "/queue":
+                    if fake.busy_with is not None:
+                        running, pending = [fake.busy_with], fake.queued
+                    else:
+                        running, pending = fake.queued[:1], fake.queued[1:]
+                    self._send(
+                        200,
+                        {
+                            "queue_running": [[0, pid, {}, {}, []] for pid in running],
+                            "queue_pending": [[1, pid, {}, {}, []] for pid in pending],
+                        },
+                    )
                 elif self.path.startswith("/object_info/"):
                     cls = urllib.parse.unquote(self.path.removeprefix("/object_info/"))
                     if cls in fake.unknown_nodes:
@@ -140,6 +155,7 @@ class FakeComfyUI:
                         return
                     prompt_id = str(uuid.uuid4())
                     fake.graphs.append(body["prompt"])
+                    fake.queued.append(prompt_id)
                     fake.history[prompt_id] = {
                         "prompt": [1, prompt_id, body["prompt"], {"client_id": body["client_id"]}, []]
                     }
@@ -151,8 +167,15 @@ class FakeComfyUI:
                     for prompt_id in body.get("delete", []):
                         fake.history.pop(prompt_id, None)
                     self._send(200, {})
-                elif self.path in ("/queue", "/interrupt"):
+                elif self.path == "/queue":
                     fake.interrupted += body.get("delete", [])
+                    # As in ComfyUI, a delete drops pending prompts only; the running one needs /interrupt.
+                    running = fake.queued[:1] if fake.busy_with is None else []
+                    fake.queued = running + [pid for pid in fake.queued if pid not in body.get("delete", []) + running]
+                    self._send(200, {})
+                elif self.path == "/interrupt":
+                    fake.interrupts.append(body)
+                    fake.queued = [pid for pid in fake.queued if pid != body.get("prompt_id")]
                     self._send(200, {})
                 else:
                     self._send(404, {})
