@@ -6,6 +6,7 @@ never only what the user typed, so the expansion step cannot route around the ga
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 NO_NEGATIVE = "(none)"
@@ -14,16 +15,21 @@ NO_NEGATIVE = "(none)"
 def assemble_prompt(user_prompt: str, expanded_prompt: str | None = None, trigger_words: Iterable[str] = ()) -> str:
     """The final prompt: Ollama's expansion of the user's prompt (the user's own text when expansion is off),
     then the LoRA trigger words, comma-separated. Blank pieces are dropped and trigger words not already
-    present are appended once, in order.
+    present are appended once, in order. Present means as a whole word or phrase, in any case: ``sks`` inside
+    ``tasks`` is not the trigger, and ``Foo`` after ``foo`` is the same one.
     """
     body = (expanded_prompt if expanded_prompt is not None and expanded_prompt.strip() else user_prompt).strip()
-    present = body.casefold()
     extra: list[str] = []
     for word in trigger_words:
         word = word.strip()
-        if word and word.casefold() not in present and word not in extra:
+        if word and not _has_phrase(", ".join((body, *extra)), word):
             extra.append(word)
     return ", ".join(part for part in (body, *extra) if part)
+
+
+def _has_phrase(text: str, phrase: str) -> bool:
+    """Whether *phrase* is in *text* with no word character either side of it, ignoring case."""
+    return re.search(rf"(?<!\w){re.escape(phrase.casefold())}(?!\w)", text.casefold()) is not None
 
 
 def _one_line(text: str) -> str:

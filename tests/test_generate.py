@@ -557,3 +557,10 @@ def test_the_record_keeps_each_loras_trigger_words(rig) -> None:
     record = rig.generate(rig.engine())
     assert [lora.trigger_words for lora in record.request.loras] == [["sks"]]
     assert record.request.final_prompt == "a cat, sks"
+
+
+@pytest.mark.parametrize("years", [float("nan"), float("inf"), -1.0])
+def test_a_face_with_a_non_finite_or_negative_estimate_makes_the_check_unavailable(years) -> None:
+    # NaN < 18 is False: a NaN face would read as an adult and the minors rule would not fire.
+    with pytest.raises(AgeUnavailable, match="no age"):
+        CuratorAgeEstimator(fake_detect(years)).estimate(b"x")

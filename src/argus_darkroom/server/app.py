@@ -130,15 +130,16 @@ class RunGate:
         self._cond = threading.Condition()
         self._running = 0
         self._exclusive = False
+        self._waiting_exclusive = 0  # blocked in acquire: no new shared run starts, so the purge cannot starve
 
     @property
     def running(self) -> int:
         return self._running
 
     def enter(self) -> bool:
-        """Start a shared run, or ``False`` at once when the limit is reached or a purge is running."""
+        """Start a shared run, or ``False`` at once when the limit is reached or a purge is running or waiting."""
         with self._cond:
-            if self._exclusive or self._running >= self.limit:
+            if self._exclusive or self._waiting_exclusive or self._running >= self.limit:
                 return False
             self._running += 1
             return True
@@ -151,10 +152,16 @@ class RunGate:
     def acquire(self, blocking: bool = True) -> bool:
         """Take it alone: no shared run and no other purge."""
         with self._cond:
-            while self._exclusive or self._running:
-                if not blocking:
+            if not blocking:
+                if self._exclusive or self._running:
                     return False
-                self._cond.wait()
+            else:
+                self._waiting_exclusive += 1
+                try:
+                    while self._exclusive or self._running:
+                        self._cond.wait()
+                finally:
+                    self._waiting_exclusive -= 1
             self._exclusive = True
             return True
 

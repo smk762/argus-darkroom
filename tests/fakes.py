@@ -114,7 +114,13 @@ class FakeNudeNet:
                 self.wfile.write(data)
 
             def do_POST(self) -> None:
-                fake.bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                if self.path != "/infer":  # as the real server: a client posting elsewhere gets no detections
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                fake.bodies.append(body)
                 fake.calls += 1
                 detections = [{"class": c, "score": s, "box": fake.box} for c, s in fake.labels.items()]
                 data = json.dumps({"success": True, "prediction": [detections]}).encode()
@@ -150,7 +156,7 @@ class FakeFaces:
         people: list[dict] | None = None,
         people_check: str | None = None,
         people_error: str | None = None,
-        health: dict | None = None,
+        health: dict | bytes | None = None,
         status: int = 200,
         health_status: int = 200,
     ) -> None:
@@ -167,7 +173,8 @@ class FakeFaces:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                data = json.dumps(fake.health).encode()
+                health = fake.health
+                data = health if isinstance(health, bytes) else json.dumps(health).encode()
                 self.send_response(fake.health_status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))

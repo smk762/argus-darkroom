@@ -8,6 +8,7 @@ joined into a path as given, so a crafted id cannot leave the root.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -27,11 +28,36 @@ def valid_id(record_id: str) -> bool:
     return bool(_ID.fullmatch(record_id))
 
 
-def _write_atomic(path: Path, data: bytes) -> str:
-    tmp = path.with_suffix(".png.tmp")
+def _fsync_dir(directory: Path) -> None:
+    """Make a rename in *directory* durable. Best effort: not every platform can open a directory."""
     try:
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _write_atomic(path: Path, data: bytes) -> str:
+    """Write *data* to *path* so a reader, or a crash, sees the old file or the whole new one, never part of one.
+
+    The temp file is this write's own (``<id>.<random>.<suffix>.tmp``, so concurrent writers to one path cannot share
+    it, and ``/purge`` and :meth:`RecordStore.delete` still find what a crash left). Its bytes reach the disk before
+    the rename, and the rename before this returns.
+    """
+    record_id, _, rest = path.name.partition(".")
+    tmp = path.with_name(f"{record_id}.{uuid.uuid4().hex}.{rest}.tmp")
+    try:
+        with tmp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
     return path.name
@@ -60,9 +86,7 @@ class RecordStore:
     def save(self, record: GenerationRecord) -> Path:
         path = self.record_path(record.id)
         # Replace atomically so a reader never sees a half-written record.
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(record.model_dump_json(), encoding="utf-8")
-        tmp.replace(path)
+        _write_atomic(path, record.model_dump_json().encode("utf-8"))
         return path
 
     def write_image(self, record_id: str, data: bytes) -> str:
@@ -95,9 +119,8 @@ class RecordStore:
         record, image = self.record_path(record_id), self.image_path(record_id)
         kept = image.is_file()
         self.remove_image(record_id)
-        image.with_suffix(".png.tmp").unlink(missing_ok=True)
-        self.depth_path(record_id).with_suffix(".png.tmp").unlink(missing_ok=True)
-        record.with_suffix(".json.tmp").unlink(missing_ok=True)
+        for tmp in self.root.glob(f"{record_id}.*.tmp"):  # an interrupted write's temp file, of any of its files
+            tmp.unlink(missing_ok=True)
         record.unlink(missing_ok=True)
         return int(kept)
 

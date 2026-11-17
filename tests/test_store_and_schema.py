@@ -98,3 +98,53 @@ def test_a_record_from_before_the_overlap_rule_still_loads() -> None:
     assert loaded.guard.age is not None
     assert loaded.guard.age.people == [] and loaded.guard.age.minor_exposed_rule == "frame"
     assert loaded.guard.age.minor_exposed
+
+
+def test_a_write_uses_its_own_temp_file(tmp_path) -> None:
+    # Another writer's temp file for the same image, mid-write: this write must neither publish nor remove it.
+    store = RecordStore(tmp_path)
+    record_id = new_id()
+    theirs = store.image_path(record_id).with_suffix(".png.tmp")
+    theirs.write_bytes(b"half of another write")
+    store.write_image(record_id, b"mine")
+    assert store.image_path(record_id).read_bytes() == b"mine"
+    assert theirs.read_bytes() == b"half of another write"
+    store.delete(record_id)  # and what a crash left is still found by the record's id
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_concurrent_writes_to_one_image_each_publish_whole(tmp_path) -> None:
+    import threading
+
+    store = RecordStore(tmp_path)
+    record_id = new_id()
+    payloads = [bytes([i]) * 200_000 for i in range(8)]
+    errors: list[BaseException] = []
+
+    def write(data: bytes) -> None:
+        try:
+            store.write_image(record_id, data)
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write, args=(p,)) for p in payloads]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert errors == []
+    assert store.image_path(record_id).read_bytes() in payloads
+    assert [p.name for p in tmp_path.iterdir()] == [f"{record_id}.png"]
+
+
+def test_a_write_reaches_the_disk_before_its_rename(tmp_path, monkeypatch) -> None:
+    import os
+
+    events: list[str] = []
+    real_fsync, real_replace = os.fsync, os.replace
+    monkeypatch.setattr(os, "fsync", lambda fd: events.append("fsync") or real_fsync(fd))
+    monkeypatch.setattr(os, "replace", lambda a, b: events.append("replace") or real_replace(a, b))
+    store = RecordStore(tmp_path)
+    store.write_image(new_id(), b"png")
+    # The file's bytes, then the rename, then the directory entry.
+    assert events == ["fsync", "replace", "fsync"]

@@ -72,19 +72,20 @@ def remote_age_status(base_url: str) -> AgeStatus:
         with _OPENER.open(url, timeout=PROBE_TIMEOUT) as resp:
             raw = resp.read()
     except urllib.error.HTTPError as exc:
-        # A server error cannot vouch for the check, whatever its body says.
-        if exc.code >= 500:
-            return AgeStatus(False, f"AGE_URL /health returned HTTP {exc.code}")
-        # Any other HTTP answer means the server is up; still need faces/mivolo in the body.
-        try:
-            raw = exc.read()
-        except (OSError, ValueError):
-            raw = b""
+        with exc:  # it holds the response's socket: close it on every path
+            # A server error cannot vouch for the check, whatever its body says.
+            if exc.code >= 500:
+                return AgeStatus(False, f"AGE_URL /health returned HTTP {exc.code}")
+            # Any other HTTP answer means the server is up; still need faces/mivolo in the body.
+            try:
+                raw = exc.read()
+            except (OSError, ValueError):
+                raw = b""
     except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return AgeStatus(False, "AGE_URL did not answer")
     try:
         body = json.loads(raw) if raw else {}
-    except json.JSONDecodeError:
+    except ValueError:  # JSONDecodeError, and UnicodeDecodeError for a body in no UTF encoding
         return AgeStatus(False, "AGE_URL /health was not curator faces")
     if not isinstance(body, dict):
         return AgeStatus(False, "AGE_URL /health was not curator faces")
@@ -130,9 +131,15 @@ class HttpAgeEstimator:
 def _years(value: object) -> float | None:
     """An estimate, or ``None``. bool is an int, and JSON can carry NaN or Infinity: none is an estimate, and
     NaN < 18 is False, so accepting one would let the minors rule silently not fire."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return float(value)
+    try:
+        years = float(value)  # JSON parses an integer of any size; one too large for a float is no estimate
+    except OverflowError:
+        return None
+    if not math.isfinite(years) or years < 0:
+        return None
+    return years
 
 
 def _box(bbox: object) -> tuple[float, float, float, float] | None:
@@ -193,11 +200,14 @@ def _reading_from_payload(payload: object) -> AgeRecord:
     if check in _PEOPLE_CHECK_FAILED:
         detail = payload.get("people_error") or check
         raise AgeUnavailable(f"people check {check}: {detail}")
+    people = payload.get("people")
+    if people is not None and check != "ok":
+        # Only ``ok`` vouches that the body pass ran: a list without it, empty or not, is not "none found".
+        raise AgeUnavailable(f"people check {check!r}")
     if check is not None and check != "ok":
         raise AgeUnavailable(f"people check {check!r}")
     faces = [_face_from_item(item, "face") for item in payload["faces"]]
     n_faces = len(faces)
-    people = payload.get("people")
     if people is None:
         return AgeRecord(faces=faces)
     if not isinstance(people, list):
@@ -254,12 +264,13 @@ class CuratorAgeEstimator:
         for face in result.faces:
             attrs = face.attributes
             years = attrs.age_years if attrs is not None and attrs.age_source in (None, "mivolo") else None
+            years = _years(years)  # NaN, infinity or a negative age is no estimate: NaN < 18 is False
             if years is None:
                 # A face with no estimate cannot be waved through: partial evidence would look like more
                 # confidence than there is, so the whole check is unavailable for this image.
                 raise AgeUnavailable("MiVOLO gave no age for a detected face")
             x, y, w, h = face.bbox
-            faces.append(FaceAge(age_estimate_years=float(years), bbox=(x, y, w, h)))
+            faces.append(FaceAge(age_estimate_years=years, bbox=(x, y, w, h)))
         n_faces = len(faces)  # face_index points into the detected faces, not the faceless people appended below
         people: list[PersonAge] = []
         for person in getattr(result, "people", None) or []:

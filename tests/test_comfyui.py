@@ -78,6 +78,32 @@ def test_a_run_that_never_finishes_times_out_interrupts_and_clears_history() -> 
         with pytest.raises(GenerationError, match="did not finish"):
             client(fake, timeout=0.5).render(GRAPH, "9")
         assert len(fake.interrupted) == 1
+        assert fake.interrupts == [{"prompt_id": fake.interrupted[0]}]  # ours was running: stop it, by name
+        assert fake.history == {}
+
+
+def test_a_timeout_while_another_clients_job_runs_does_not_interrupt_it() -> None:
+    # Ours is still queued behind someone else's prompt: a bare /interrupt would kill their run, not ours.
+    with FakeComfyUI(scripted(lambda pid: event("executing", node="3", prompt_id=pid))) as fake:
+        fake.busy_with = "someone-else"
+        with pytest.raises(GenerationError, match="did not finish"):
+            client(fake, timeout=0.5).render(GRAPH, "9")
+        assert len(fake.interrupted) == 1  # ours dropped from the queue
+        assert fake.interrupts == []
+        assert fake.history == {}
+
+
+def test_a_dropped_websocket_stops_the_prompt_it_can_no_longer_hear() -> None:
+    def drop(fake, pid, graph):
+        for conn in list(fake._conns.values()):
+            conn.close()
+        return []
+
+    with FakeComfyUI(drop) as fake:
+        with pytest.raises(GenerationError, match="websocket failed"):
+            client(fake).render(GRAPH, "9")
+        assert len(fake.interrupted) == 1
+        assert fake.interrupts == [{"prompt_id": fake.interrupted[0]}]
         assert fake.history == {}
 
 

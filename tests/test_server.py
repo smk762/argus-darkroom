@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import threading
+import time
 import zipfile
 from dataclasses import replace
 
@@ -242,6 +243,20 @@ def test_models_skips_the_parts_of_a_diffusers_folder(tmp_path) -> None:
         (root / name).write_bytes(b"x")
     (root / "sdxl/parts/model_index.json").write_text("{}")
     assert ModelLibrary(tmp_path).names("checkpoint") == ["sdxl/a/a.safetensors", "whole.safetensors"]
+
+
+def test_models_lists_only_names_that_can_be_used(tmp_path) -> None:
+    store, root = tmp_path / "shared", tmp_path / "models" / "loras"
+    store.mkdir()
+    root.mkdir(parents=True)
+    (store / "outside.safetensors").write_bytes(b"x")
+    (root / "inside.safetensors").write_bytes(b"y")
+    (root / "linked.safetensors").symlink_to(store / "outside.safetensors")  # leaves the folder: path() refuses it
+    (root / "alias.safetensors").symlink_to(root / "inside.safetensors")  # stays inside: usable
+    library = ModelLibrary(tmp_path / "models")
+    assert library.names("lora") == ["alias.safetensors", "inside.safetensors"]
+    for name in library.names("lora"):
+        library.path("lora", name)
 
 
 def test_models_without_comfyui_still_lists_the_files(rig) -> None:
@@ -640,15 +655,25 @@ def test_a_removal_in_flight_cannot_bring_back_a_purged_record(rig, monkeypatch,
 
     def paused_load(record_id: str):
         found = load(record_id)
-        loaded.set()
-        resume.wait(5)
+        if not loaded.is_set():  # only the removal's read pauses: any later load (the purge's) goes straight through
+            loaded.set()
+            resume.wait(5)
         return found
 
+    answers: dict[str, object] = {}
+
+    def keep(name: str, call, *args, **kwargs):
+        def run() -> None:
+            try:
+                answers[name] = call(*args, **kwargs).status_code
+            except BaseException as exc:  # a thread's exception would otherwise only be printed
+                answers[name] = exc
+
+        return threading.Thread(target=run)
+
     monkeypatch.setattr(store, "load", paused_load)
-    removal = threading.Thread(target=c.delete, args=(f"/record/{record['id']}",))
-    purge = threading.Thread(
-        target=c.post, args=(route.format(id=record["id"]),), kwargs={"json": {"confirm": "purge"}}
-    )
+    removal = keep("removal", c.delete, f"/record/{record['id']}")
+    purge = keep("purge", c.post, route.format(id=record["id"]), json={"confirm": "purge"})
     removal.start()
     assert loaded.wait(5)
     purge.start()
@@ -657,7 +682,34 @@ def test_a_removal_in_flight_cannot_bring_back_a_purged_record(rig, monkeypatch,
     removal.join(5)
     purge.join(5)
     assert not removal.is_alive() and not purge.is_alive()
+    # The purge waited for the removal, so both did their work; neither failed and left the other to do it.
+    assert answers == {"removal": 200, "purge": 200}
     assert not store.exists(record["id"])
+
+
+def test_a_waiting_purge_is_not_starved_by_new_runs() -> None:
+    from argus_darkroom.server.app import RunGate
+
+    gate = RunGate(limit=2)
+    assert gate.enter()
+    took = threading.Event()
+
+    def purge() -> None:
+        gate.acquire()
+        took.set()
+
+    waiter = threading.Thread(target=purge, daemon=True)
+    waiter.start()
+    deadline = time.monotonic() + 5
+    while not gate._waiting_exclusive and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not gate.enter()  # under the limit, but a purge is queued: no new run jumps it
+    gate.leave()
+    assert took.wait(5)
+    assert not gate.enter()
+    gate.release()
+    assert gate.enter()
+    gate.leave()
 
 
 def test_a_removal_is_not_refused_during_a_generation(rig) -> None:
