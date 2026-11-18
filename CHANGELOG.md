@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`sdxl+lora2+inpaint.json`**: SDXL inpainting with two LoRAs, for argus-mint's teaser renders (an identity LoRA
+  plus a project style LoRA, smk762/argus-mint#47). It is `sdxl+lora1+inpaint` with the second `LoraLoader`
+  (`$lora_2` / `$lora_2_weight`) chained after the first, as `sdxl+lora2` chains it. `/models` now lists
+  `inpaint_lora_counts` `[0, 1, 2]` for SDXL checkpoints; a two-LoRA mask run was a 400 before. A deployment with its
+  own `WORKFLOW` directory must copy the file in.
 - `/health` reports `demo`: true only for `make demo` (`demo/run.py`, fake backends), never set from the environment.
   A client test that generates (safelight's workflow contract test) refuses any server that does not say it is the
   demo, so it never renders on a GPU (smk762/argus-safelight#58).

@@ -179,7 +179,7 @@ none). Records name the template in `request.workflow`, beside `workflow_sha256`
 
 | Family | Files | Sampling |
 |---|---|---|
-| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
 | `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
 | `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
 | `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |

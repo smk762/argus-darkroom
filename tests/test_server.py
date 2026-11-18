@@ -179,7 +179,7 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         {"name": "sdxl/a.safetensors", "family": "sdxl", "lora_counts": [0, 1, 2]},
     ]
     assert [c["img2img_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1]]
-    assert [c["inpaint_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1]]
+    assert [c["inpaint_lora_counts"] for c in body["checkpoints"]] == [[], [], [], [0, 1, 2]]
     by_name = {w["name"]: w for w in body["workflows"]}
     assert set(by_name) == {
         "sdxl",
@@ -189,6 +189,7 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+lora1+img2img",
         "sdxl+inpaint",
         "sdxl+lora1+inpaint",
+        "sdxl+lora2+inpaint",
         "flux",
         "flux+lora1",
         "flux+lora2",
@@ -202,6 +203,7 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+lora1+img2img": ("img2img", True),
         "sdxl+inpaint": ("inpaint", False),
         "sdxl+lora1+inpaint": ("inpaint", False),
+        "sdxl+lora2+inpaint": ("inpaint", False),
     }
     assert sorted(c.get("/health").json()["workflows"]) == sorted(by_name)
 
