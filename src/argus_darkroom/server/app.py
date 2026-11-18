@@ -515,7 +515,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         def stream() -> Iterator[bytes]:
             sink = _Sink()
             with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
-                for path in sorted(store.root.glob("*.json")):
+                for path in sorted(store.root.glob("*.json")):  # nosemgrep: handler-scans-all - export-all: streaming every record is the operation
                     if not valid_id(path.stem):
                         continue
                     zf.write(path, f"records/{path.name}")
@@ -579,7 +579,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 # In a worker thread: waiting on record_lock must not block the event loop.
                 removed = {"records": 0, "images": 0}
                 with record_lock:
-                    for path in engine.store.root.iterdir():
+                    for path in engine.store.root.iterdir():  # nosemgrep: handler-scans-all - purge-all: visiting every record is the operation
                         if path.name.endswith(DEPTH_SUFFIX) and valid_id(path.name.removesuffix(DEPTH_SUFFIX)):
                             path.unlink(missing_ok=True)  # derived from an image; counted with neither
                         elif valid_id(path.stem) and path.suffix in (".json", ".png"):
