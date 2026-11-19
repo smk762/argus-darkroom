@@ -8,6 +8,8 @@ from fakes import FakeSingGuard, policy_of, safe_answer, unsafe_answer
 from argus_darkroom.config import ConfigError, Settings
 from argus_darkroom.engine import Engine
 from argus_darkroom.guard import Guard
+from argus_darkroom.models import Cell
+from argus_darkroom.preflight import run_preflight
 from argus_darkroom.prompt import assemble_prompt, frame
 from argus_darkroom.request import GenerateRequest, RequestError
 
@@ -31,6 +33,20 @@ def test_final_prompt_is_expansion_then_trigger_words() -> None:
 
 def test_trigger_words_are_not_repeated() -> None:
     assert assemble_prompt("a cat in SKS style", None, ["sks", "sks", " "]) == "a cat in SKS style"
+
+
+def test_a_trigger_inside_a_longer_word_is_still_appended() -> None:
+    assert assemble_prompt("a list of tasks", None, ["sks"]) == "a list of tasks, sks"
+    assert assemble_prompt("a party", None, ["art"]) == "a party, art"
+
+
+def test_a_trigger_differing_only_in_case_is_appended_once() -> None:
+    assert assemble_prompt("a cat", None, ["Foo", "foo", "FOO"]) == "a cat, Foo"
+
+
+def test_a_trigger_that_starts_with_a_symbol_is_present_beside_a_word() -> None:
+    # Only a word-character edge needs a boundary: "<sks>" after "x" is still "<sks>".
+    assert assemble_prompt("a cat", None, ["x<sks>", "<sks>"]) == "a cat, x<sks>"
 
 
 def test_frame_labels_the_negative_prompt() -> None:
@@ -128,7 +144,8 @@ def test_a_failed_check_is_a_refusal_recorded_as_unchecked(singguard, tmp_path, 
 
 def test_an_unreachable_singguard_refuses(tmp_path) -> None:
     eng = Engine(Settings(singguard_url="http://127.0.0.1:1", output_root=tmp_path))
-    assert eng.preflight(GenerateRequest(user_prompt="x")).reason == "unchecked"
+    result = eng.preflight(GenerateRequest(user_prompt="x"))
+    assert (result.refused, result.verdict, result.reason) == (True, "refused", "unchecked")
 
 
 def test_an_unchecked_advisory_policy_does_not_refuse(singguard, tmp_path) -> None:
@@ -231,3 +248,38 @@ def test_a_refusal_is_recorded_without_an_image(singguard, tmp_path) -> None:
     assert record.guard.preflight["default"].state == "flagged"
     assert eng.store.load(record.id) == record
     assert sorted(p.suffix for p in tmp_path.iterdir()) == [".json"]
+
+
+# --- a verdict without a result fails closed -----------------------------------------------------------
+
+
+class StubGuard:
+    """A guard whose cells carry a state but no SingGuard result, as a degraded answer might."""
+
+    def __init__(self, states: dict[str, str]) -> None:
+        self.states = states
+
+    def check_text(self, policy: str, text: str, thinking: str | None = None) -> Cell:
+        return Cell(state=self.states.get(policy, "safe"))
+
+
+@pytest.mark.parametrize("enforcing", ["default", "adult-granular"])
+def test_illegal_without_a_result_refuses(enforcing) -> None:
+    result = run_preflight(StubGuard({enforcing: "illegal"}), "x", "", enforcing)
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "illegal", enforcing)
+
+
+def test_illegal_advisory_without_a_result_refuses() -> None:
+    result = run_preflight(StubGuard({"adult-granular": "illegal"}), "x", "", "default", ["adult-granular"])
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "illegal", "adult-granular")
+
+
+def test_flagged_without_a_result_refuses_under_sfw() -> None:
+    result = run_preflight(StubGuard({"default": "flagged"}), "x", "", "default")
+    assert (result.verdict, result.reason, result.refusing_policy) == ("refused", "unspecified", "default")
+
+
+def test_flagged_without_a_result_warns_under_nsfw() -> None:
+    result = run_preflight(StubGuard({"adult-granular": "flagged"}), "x", "", "adult-granular")
+    assert result.verdict == "proceed"
+    assert result.warnings == ["adult-granular: flagged unspecified; the output scan decides"]

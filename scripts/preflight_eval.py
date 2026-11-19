@@ -45,13 +45,20 @@ def load(path: Path) -> list[dict]:
     return cases
 
 
+def positive_int(value: str) -> int:
+    n = int(value)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return n
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--url", required=True, help="SingGuard server origin, e.g. http://localhost:9150")
     parser.add_argument("--probes", type=Path, default=DEFAULT_PROBES)
     parser.add_argument("--policy", action="append", choices=policy_table.POLICIES, help="repeatable; default: all")
     parser.add_argument("--thinking", choices=THINKING_MODES, default="cascade")
-    parser.add_argument("--repeat", type=int, default=1)
+    parser.add_argument("--repeat", type=positive_int, default=1)
     parser.add_argument("--out", type=Path, help="write every run as JSONL")
     args = parser.parse_args()
 
@@ -88,6 +95,9 @@ def main() -> int:
         print(f"{policy:16}{group:18}{ok:>8}{bad:>7}{unk:>11}")
     if args.out:
         args.out.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    if not rows:  # no case ran (an empty probes file): nothing was shown to pass
+        print("no probe was run", file=sys.stderr)
+        return 1
     return 1 if any(bad or unk for _, bad, unk in tally.values()) else 0
 
 

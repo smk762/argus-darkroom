@@ -7,13 +7,14 @@ generation from here is guarded exactly as one from the server is, and leaves th
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 
 import typer
 from typer import Argument, Option
 
-from argus_darkroom import __version__
+from argus_darkroom import __version__, gpu
 from argus_darkroom.config import PREFIX, ConfigError, Settings
 from argus_darkroom.request import MAX_CLIP_SKIP, GenerateRequest, LoRASpec, RequestError
 from argus_darkroom.workflow import WorkflowError
@@ -38,14 +39,23 @@ def _engine():
 
 def _parse_loras(specs: list[str], triggers: list[str]) -> list[LoRASpec]:
     """``NAME`` or ``NAME:WEIGHT`` per ``--lora``. Trigger words belong to the first LoRA unless there are
-    several, in which case each ``--trigger`` is ``NAME=word`` (or ``NAME=word,word``)."""
+    several, in which case each ``--trigger`` is ``NAME=word`` (or ``NAME=word,word``).
+
+    Only a number after the last ``:`` is a weight, so a name with a colon in it (``sub:dir/style``) is a name.
+    A name ending in ``:<number>`` needs an explicit weight: ``civitai:12345`` is ``civitai`` at 12345, so say
+    ``civitai:12345:1``. A weight must be finite."""
     loras: list[LoRASpec] = []
     for spec in specs:
-        name, _, weight = spec.rpartition(":") if ":" in spec else (spec, "", "")
+        name, sep, suffix = spec.rpartition(":")
         try:
-            loras.append(LoRASpec(name=name, weight=float(weight) if weight else 1.0))
-        except ValueError as exc:
-            raise typer.BadParameter(f"--lora {spec!r}: the weight after ':' must be a number") from exc
+            weight = float(suffix) if sep and name else None
+        except ValueError:
+            weight = None  # not a number: the colon is part of the name
+        if weight is None:
+            name, weight = spec, 1.0
+        if not math.isfinite(weight):
+            raise typer.BadParameter(f"--lora {spec!r}: the weight after ':' must be a finite number")
+        loras.append(LoRASpec(name=name, weight=weight))
     for trigger in triggers:
         name, sep, words = trigger.partition("=")
         if not sep:
@@ -112,12 +122,20 @@ def generate(
     advisory: list[str] = Option([], "--advisory", help="Extra policy to run for comparison (repeatable)"),
     thinking: str | None = Option(None, "--thinking", help="fast, fast-slow, slow or cascade"),
     nsfw_threshold: float = Option(0.2, "--nsfw-threshold", help="NudeNet score at which an NSFW image is blurred"),
+    priority: str = Option(
+        gpu.DEFAULT_PRIORITY, "--priority", help="GPU lease class with the broker: interactive, batch or background"
+    ),
     as_json: bool = Option(False, "--json", help="Print the whole record instead of a summary"),
 ) -> None:
     """Generate one image through every guard. Exits 0 for a released image (passed or review), 2 otherwise.
 
     The image is written under the output root only when it is released; the record is kept either way.
     """
+    try:
+        lease_class = gpu.parse_priority(priority)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(EXIT_USAGE) from exc
     request = GenerateRequest(
         user_prompt=prompt,
         negative_prompt=negative,
@@ -151,7 +169,7 @@ def generate(
             typer.echo(f"scan {data['policy']} {data['context']}: {data['cell']['state']}", err=True)
 
     try:
-        record = engine.generate(request, progress)
+        record = engine.generate(request, progress, lease_class)
     except RequestError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(EXIT_USAGE) from exc

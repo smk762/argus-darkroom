@@ -1,36 +1,38 @@
 # argus-darkroom
 
-Guarded image generation. Read `spec.md` for the design and `README.md` for running it. This file is the rules that must
-not be broken and where things are.
+Guarded image generation. Read `spec.md` for the design and `README.md` for running it. This file is what must never
+happen and what checks it.
 
-## Rules that must hold
+## Must never happen
 
-- **Nothing is written before the verdict.** No temp file, no cortex blob, no `SaveImage`/`PreviewImage` node. A
-  deleted or omitted image is never written, and its buffer is dropped. `tests/test_generate.py` lists the output root,
-  the system temp directory and the fake ComfyUI history before and after to prove it.
-- **Never run unguarded.** An empty `SINGGUARD_URL` refuses to start (`Settings.__post_init__`). A failed check is an
-  `unchecked` cell, never a pass. An unchecked enforcing cell deletes; an unchecked advisory cell is only shown.
-- **Every check judges the final prompt**, expansion included. The negative prompt is always part of pre-flight. Do not
-  add a path that checks only the user's text.
-- **Policies are chosen by name only.** Never accept policy text in a request. Policy texts, the illegal table and
-  `mode()` live in `argus_cortex.moderation.policies`; do not copy them here.
-- **Fail closed.** If you are unsure whether an error should refuse, delete or pass, it refuses or deletes.
-- **Never import NudeNet** (AGPL). Reach it over HTTP through cortex's `NudeNetClient`.
-- **The server binds to localhost by default.** Writes need `WriteGuard` and `cross_site_refuse`. `POST /purge` exists
-  only with `ARGUS_DARKROOM_DEVMODE` and answers 404 otherwise.
-- **The age is a tool's estimate.** Name it `age_estimate_years`, source `mivolo`. Never call it an age, and never send
-  it to SingGuard as context.
-- **No real sexual, violent or illegal content** in the repo or tests. Drive the illegal path with a fake verdict.
-- **An input image is judged like an output, and goes on only on `passed`.** Image-to-image runs the same scans and
-  `decide` on the input after the text pre-flight and before anything reaches ComfyUI; any other outcome (review,
-  omitted, deleted, unchecked) refuses. The input is never written to disk: it travels as base64 inside the graph to
-  `DarkroomLoadImageBase64` (`comfyui/`), the history delete removes it, and the record keeps only its hashes. No
-  template may load an image any other way.
-- **An inpainting mask is never scanned and never written.** It is a region selector with no imagery: the input it
-  selects from gets its full pre-flight as above, and the output is judged as usual, so the mask is sent to no guard.
-  It is checked as a file only (decodes, the upright input's exact size, something masked; a 400 otherwise), travels as
-  base64 in the graph to `DarkroomLoadMaskBase64`, and the record keeps only its hashes and `masked_fraction`. Only an
-  `+inpaint` template may hold the mask loader, and a mask never falls back to an image-to-image template.
+Each row names what enforces it. An **UNENFORCED** row is a known gap: when one bites, add a check, not more prose.
+`suite-rules` is argus-ci's lint catalogue (the CI job of that name, with an empty `.suite-rules-baseline.json`).
+
+| Never | Enforced by |
+|---|---|
+| An image written before the verdict (temp file, cortex blob, `SaveImage`/`PreviewImage` node), or a deleted or omitted image written at all | `test_generate::test_an_illegal_cell_deletes_and_leaves_no_bytes` (output root, system temp and ComfyUI history, before and after); `test_workflow::test_a_disk_writing_node_is_refused_at_load`; at run time, ComfyUI's own output-node list (`Engine._verify_outputs`) |
+| Running without SingGuard | `test_server::test_an_empty_singguard_url_stops_the_server_starting` (`Settings.__post_init__`) |
+| A failed check counted as a pass. An unchecked enforcing cell deletes; an unchecked advisory cell is only shown | `test_preflight::test_a_failed_check_is_a_refusal_recorded_as_unchecked`; `test_outcome::test_unchecked_enforcing_deletes_but_is_not_critical`, `::test_unchecked_advisory_is_grey_and_changes_nothing` |
+| A check that judges the user's text instead of the final prompt (expansion included), or a pre-flight without the negative prompt | `test_preflight::test_the_expansion_is_what_is_judged`, `::test_frame_always_carries_a_negative_line`; `test_expansion::test_expansion_cannot_route_around_the_gate` |
+| Policy text accepted in a request (policies are chosen by name) | `test_server::test_a_request_cannot_carry_policy_text` |
+| A policy text copied out of `argus_cortex.moderation.policies` (with the illegal table and `mode()`, it lives there only) | `test_must_never::test_no_policy_text_is_copied_out_of_cortex` |
+| An outcome less strict than the table: unsure means refuse or delete | `test_outcome::test_every_combination_of_cell_states`. Precedence is deleted, omitted (SFW), review, passed; test any change by cell combination |
+| NudeNet (AGPL) imported in-process: reach it over HTTP through cortex's `NudeNetClient` | `suite-rules` → `agpl-import` |
+| The server bound beyond localhost by default, a write without `WriteGuard` and `cross_site_refuse`, or `POST /purge` without `ARGUS_DARKROOM_DEVMODE` (it answers 404) | `test_cli::test_serve_maps_its_flags_to_the_environment_and_binds_to_localhost`; `test_server::test_a_cross_site_write_is_refused_and_a_cross_site_read_is_not_granted`, `::test_purge_does_not_exist_without_devmode` |
+| The age estimate called an age: it is `age_estimate_years`, source `mivolo`, a tool's estimate | `AgeRecord.source` is `Literal["mivolo"]`; a renamed field fails `test_must_never::test_record_fields_only_grow_within_a_major` |
+| The age estimate sent to SingGuard as context | `test_must_never::test_the_age_estimate_never_reaches_singguard` |
+| Real sexual, violent or illegal imagery in the repo or tests: tests draw their images in code and drive the illegal path with a fake verdict | `test_must_never::test_no_image_video_or_model_file_is_tracked`, `::test_no_image_is_hidden_in_a_base64_literal` |
+| Real sexual, violent or illegal text in the repo or tests: every prompt a test or `eval/*.jsonl` sends is a line of `.suite-prompts-allowlist.txt`, reviewed like code | `suite-rules` CI job → argus-ci `check.py prompts` (argus-ci#20) |
+| An input image used on any outcome but `passed`: review, omitted, deleted and unchecked all refuse, after pre-flight and before ComfyUI | `test_img2img::test_an_illegal_input_is_refused_and_critical`, `::test_an_input_flagged_under_sfw_is_refused_not_sent_to_review`, `::test_an_input_singguard_cannot_check_is_refused`, `::test_engine_render_will_not_send_an_input_that_was_not_scanned` |
+| An input image (or mask) written to disk, left in ComfyUI's history, or loaded by a template any way but base64 in the graph to `DarkroomLoadImageBase64` | `test_img2img::test_a_passed_input_reaches_comfyui_in_the_graph_and_the_output_is_judged_as_usual` (no bytes left behind, history empty); `test_inpaint::test_an_inpaint_run_sends_the_input_and_the_mask_and_scans_only_the_input` (history empty); `test_comfyui_node::test_the_node_never_touches_a_file`; `test_workflow::test_a_node_that_loads_an_unchecked_image_is_refused_at_load` |
+| The input or the mask in a repr, an error or a record (the record keeps hashes, and `masked_fraction`) | `test_img2img::test_the_input_never_shows_in_a_repr`, `::test_a_comfyui_error_that_echoes_the_input_does_not_put_it_in_the_record`; `test_inpaint::test_the_mask_never_shows_in_a_repr` |
+| A mask scanned, sent to a guard or written. It selects a region and has no imagery: it is checked as a file only (decodes, the upright input's exact size, something masked, else 400) | `test_inpaint::test_an_inpaint_run_sends_the_input_and_the_mask_and_scans_only_the_input`, `::test_a_refused_input_with_a_mask_reaches_nothing_and_leaves_no_bytes`, `::test_a_mask_that_cannot_be_used_is_a_request_error_and_touches_nothing` |
+| The mask loader outside an `+inpaint` template, or a mask falling back to an image-to-image template | `test_workflow::test_a_mask_loader_outside_an_inpaint_template_is_refused`; `test_inpaint::test_a_mask_with_no_inpaint_template_is_a_request_error` |
+| A record field renamed or removed within a `record_version` major (adding one is fine) | `test_must_never::test_record_fields_only_grow_within_a_major` (against `tests/data/record-1.0-fields.txt`); `test_store_and_schema::test_an_incompatible_major_is_refused` |
+| The depth workflow offered for generation | `test_depth::test_the_depth_workflow_is_never_offered_for_generation` |
+| A GPU lease nested inside another | `test_gpu::test_expansion_leases_its_ollama_model_first_and_leases_never_nest` |
+| A refused or timed-out lease retried like an OOM | `test_gpu::test_a_refused_lease_is_a_failed_record_and_nothing_reaches_comfyui` |
+| The NudeNet detector used to decide (it is recorded, never read) | `test_nudenet_detector::test_the_upstream_320n_image_has_no_health_route_and_records_no_detector`, `::test_a_failing_health_route_costs_only_the_detector` |
 
 ## Argus suite
 <!-- argus-suite: keep this block; argus-ci checks for it -->
@@ -42,23 +44,13 @@ argus-cortex's SUITE.md** (a PR to argus-cortex in the same release).
 
 Not checked out? Read https://github.com/smk762/argus-cortex/blob/main/SUITE.md
 
-## Layout
+## Not shown by the code
 
-| | |
-|---|---|
-| `engine.py` | `Engine`: `begin` validates, `_run` expands, pre-flights, scans an input image (`check_input`), renders, scans, decides, releases or destroys |
-| `outcome.py` | the outcome table (`decide`). Precedence: deleted, omitted (SFW), review, passed. Unit-test any change by cell combination |
-| `preflight.py`, `scan.py`, `guard.py` | the text check, the image scans, and the SingGuard wrapper that turns failures into `unchecked` |
-| `prompt.py` | `assemble_prompt`, and `frame` (folds line breaks so text cannot pose as the frame's labels) |
-| `expansion.py` | `OllamaExpander`. Ollama is never a guard |
-| `comfyui.py`, `workflow.py`, `modelfiles.py`, `hashing.py` | render over the websocket, the `$placeholder` templates (one file, or a directory chosen by checkpoint family, LoRA count and mode: `+img2img`, `+inpaint`), model sha256s |
-| `images.py` | an image's hashes (`describe`), `load_input`: the image-to-image input decoded once into the PNG that is both scanned and sent, and `load_mask`: the inpainting mask, checked against the input's size and cut into a 1-bit PNG |
-| `comfyui/` | not in the package: `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64`, the ComfyUI custom nodes image-to-image and inpainting need (base64 in, `IMAGE` / `MASK` out, no disk) |
-| `age.py` | curator over `AGE_URL` (`POST /faces?body=true`), or in-process `detect_faces` behind the `[age]` extra |
-| `store.py` | `<id>.json` and `<id>.png` in the output root; atomic image write |
-| `models.py` | the versioned wire models. `schema/darkroom-wire.schema.json` is generated from them |
-| `demo/run.py`, `demo/smoke.py` | the real server and engine over the test fakes; a marker in the prompt picks the verdicts. Demo only: it turns `DEVMODE` on and uses fake models |
-| `server/app.py`, `cli.py`, `config.py`, `request.py` | HTTP, Typer, `ARGUS_DARKROOM_*`, the request model (`extra=forbid`) |
+- `comfyui/` is not in the package: the ComfyUI custom nodes image-to-image, inpainting and depth maps need
+  (`DarkroomLoadImageBase64`, `DarkroomLoadMaskBase64`, `DarkroomDepthAnything`), copied into ComfyUI by hand.
+- `depth.py` runs no guard: the image was already released, and nothing new goes in.
+- `gpu.py`'s footprints are kept in step with `gpu-tenant.yaml` (`test_gpu::test_the_manifest_validates_and_matches_the_lease_figures`).
+- `demo/` is demo only: it turns `DEVMODE` on and uses fake models.
 
 ## Working
 
@@ -70,9 +62,8 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
 - Work in a worktree from `origin/dev` and open PRs into `dev` (see Branches below). Run lint, tests and
   `schema --check` locally before every PR; CI runs them again on the PR.
 - Use `docker compose`, not `docker-compose`.
-- The record is a wire contract (`record_version`). Adding a field is fine; renaming or removing one is a new version.
-  The blur decision lives only in `guard.nudenet.blur`, which is recorded for every NSFW-policy image (`exposed_score`
-  is `null` when NudeNet was unreachable). Each LoRA records the `trigger_words` the request supplied.
+- The blur decision lives only in `guard.nudenet.blur`, recorded for every NSFW-policy image (`exposed_score` is `null`
+  when NudeNet was unreachable).
 - argus-safelight codes against the HTTP shapes in the README's API table (`/health`, `/policies`, `/models`, `/records`
   paging, SSE event bodies). Change one and `make demo` plus `make smoke` show whether the UI still works; update
   safelight's `types.ts` in step.
@@ -80,6 +71,10 @@ uv run --no-sync argus-darkroom schema --check   # after any change to models.py
   them to mocking.
 - `scripts/preflight_eval.py` is run by hand against a real SingGuard that supports text-only checks (agent-composer
   PR #4). It is not a test.
+- `scripts/nudenet_compare.py` is run by hand: it scores darkroom's stored images (or a hand-sorted `blur/`/`clear/`
+  folder outside the repo) on two NudeNet servers and sweeps the new one's cutoff against the old 0.2. It reports
+  names and scores only. Stored images are all released ones, so that sample has no deleted or omitted images. It
+  is not a test, and its sample never enters the repo.
 
 ## Branches
 

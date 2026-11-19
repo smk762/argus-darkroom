@@ -49,6 +49,7 @@ def test_the_shipped_examples_load_as_a_set_keyed_by_family_and_lora_count() -> 
         ("sdxl", "sdxl", 0, "txt2img"), ("sdxl+lora1", "sdxl", 1, "txt2img"), ("sdxl+lora2", "sdxl", 2, "txt2img"),
         ("sdxl+img2img", "sdxl", 0, "img2img"), ("sdxl+lora1+img2img", "sdxl", 1, "img2img"),
         ("sdxl+inpaint", "sdxl", 0, "inpaint"), ("sdxl+lora1+inpaint", "sdxl", 1, "inpaint"),
+        ("sdxl+lora2+inpaint", "sdxl", 2, "inpaint"),
         ("flux", "flux", 0, "txt2img"), ("flux+lora1", "flux", 1, "txt2img"), ("flux+lora2", "flux", 2, "txt2img"),
         ("flux-klein", "flux-klein", 0, "txt2img"), ("sd35", "sd35", 0, "txt2img"),
     }  # fmt: skip
@@ -490,6 +491,7 @@ def test_an_img2img_name_without_the_input_slot_refuses_the_set(tmp_path) -> Non
     [
         (0, "txt2img", "sdxl"), (0, "img2img", "sdxl+img2img"), (0, "inpaint", "sdxl+inpaint"),
         (1, "txt2img", "sdxl+lora1"), (1, "img2img", "sdxl+lora1+img2img"), (1, "inpaint", "sdxl+lora1+inpaint"),
+        (2, "txt2img", "sdxl+lora2"), (2, "inpaint", "sdxl+lora2+inpaint"),
     ],
 )  # fmt: skip
 def test_select_picks_the_template_for_the_mode(loras, mode, name) -> None:
@@ -559,6 +561,45 @@ def test_the_inpaint_examples_extend_their_img2img_ones_with_a_mask_and_a_compos
         assert b["9"]["inputs"]["images"] == ["21", 0]
         rest = set(a) - {"3", "9"}
         assert {k: a[k] for k in rest} == {k: b[k] for k in rest}
+
+
+def test_the_two_lora_inpaint_example_chains_its_second_lora_as_the_text_to_image_one_does() -> None:
+    one, two = inpaint("sdxl+lora1+inpaint.json"), inpaint("sdxl+lora2+inpaint.json")
+    txt = json.loads((EXAMPLES / "sdxl+lora2.json").read_text())
+    # sdxl+lora2 adds its second LoraLoader (node 12) after the first (10); the inpaint graph uses 12 for the
+    # input image, so the second LoRA is node 22 there, wired the same way.
+    assert set(two) - set(one) == {"22"}
+    assert two["22"] == txt["12"] == {
+        "class_type": "LoraLoader",
+        "inputs": {
+            "lora_name": "$lora_2", "strength_model": "$lora_2_weight", "strength_clip": "$lora_2_weight",
+            "model": ["10", 0], "clip": ["10", 1],
+        },
+    }  # fmt: skip
+    # The sampler takes the model, and CLIP skip the clip, from the second LoRA, as in sdxl+lora2.
+    assert txt["3"]["inputs"]["model"] == ["12", 0] and two["3"]["inputs"]["model"] == ["22", 0]
+    assert txt["11"]["inputs"]["clip"] == ["12", 1] and two["11"]["inputs"]["clip"] == ["22", 1]
+    assert {k: v for k, v in two["3"]["inputs"].items() if k != "model"} == {
+        k: v for k, v in one["3"]["inputs"].items() if k != "model"
+    }
+    assert {k: v for k, v in two["11"]["inputs"].items() if k != "clip"} == {
+        k: v for k, v in one["11"]["inputs"].items() if k != "clip"
+    }
+    assert {k: two[k] for k in set(one) - {"3", "11"}} == {k: one[k] for k in set(one) - {"3", "11"}}
+
+    wf = load_workflow(EXAMPLES / "sdxl+lora2+inpaint.json")
+    assert wf.mode == "inpaint" and wf.lora_slots == 2
+    assert {"$init_image", "$init_mask", "$denoise"} <= wf.slots
+    loras = (
+        LoRARef(name="person.safetensors", sha256=SHA, weight=0.8),
+        LoRARef(name="style.safetensors", sha256=SHA, weight=0.6),
+    )
+    out = render(wf, params(loras=loras, init_image="aW1hZ2U=", init_mask="bWFzaw==", denoise=0.9))
+    assert (out["10"]["inputs"]["lora_name"], out["10"]["inputs"]["strength_model"]) == ("person.safetensors", 0.8)
+    assert (out["22"]["inputs"]["lora_name"], out["22"]["inputs"]["strength_clip"]) == ("style.safetensors", 0.6)
+    assert out["12"]["inputs"]["image"] == "aW1hZ2U=" and out["15"]["inputs"]["mask"] == "bWFzaw=="
+    with pytest.raises(WorkflowError, match="\\$lora_2 but this run has 1 LoRA"):
+        render(wf, params(loras=loras[:1], init_image="aW1hZ2U=", init_mask="bWFzaw==", denoise=0.9))
 
 
 def test_render_fills_the_input_the_mask_and_the_denoise() -> None:
@@ -635,10 +676,10 @@ def test_a_misnamed_inpaint_member_refuses_the_set(tmp_path, name) -> None:
 
 def test_no_substitute_for_an_inpaint_run() -> None:
     workflows = load_workflows(EXAMPLES)
-    assert workflows.lora_counts("sdxl/a.safetensors", "inpaint") == [0, 1]
+    assert workflows.lora_counts("sdxl/a.safetensors", "inpaint") == [0, 1, 2]
     assert workflows.lora_counts("flux/f.safetensors", "inpaint") == []
-    with pytest.raises(WorkflowError, match="no inpainting workflow renders the 'sdxl' family with 2 LoRA.*0, 1"):
-        workflows.select("sdxl/a.safetensors", 2, "inpaint")
+    with pytest.raises(WorkflowError, match="no inpainting workflow renders the 'sdxl' family with 3 LoRA.*0, 1, 2"):
+        workflows.select("sdxl/a.safetensors", 3, "inpaint")
     with pytest.raises(WorkflowError, match="no inpainting workflow renders the 'flux'.*no inpainting"):
         workflows.select("flux/f.safetensors", 0, "inpaint")
     one = load_workflows(EXAMPLES / "sdxl+inpaint.json")

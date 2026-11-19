@@ -290,6 +290,20 @@ def test_a_directory_picks_the_inpaint_template_for_a_mask(tmp_path, singguard, 
     ]:
         assert eng.prepare(rig.request(checkpoint="sdxl/a.safetensors", **body)).workflow.name == name
 
+    # An identity LoRA plus a style LoRA (argus-mint's teaser inpaint) picks the two-LoRA inpaint template and runs.
+    (rig.root / "models" / "loras" / "person.safetensors").write_bytes(b"p")
+    two = [{"name": "person.safetensors"}, {"name": "style.safetensors"}]
+    request = rig.request(checkpoint="sdxl/a.safetensors", loras=two, init_image=init())
+    assert eng.prepare(request).workflow.name == "sdxl+lora2+inpaint"
+    record = rig.generate(eng, checkpoint="sdxl/a.safetensors", loras=two, init_image=init())
+    assert record.outcome == "passed" and record.request.workflow == "sdxl+lora2+inpaint"
+    (graph,) = rig.comfyui.graphs
+    assert [n["inputs"]["lora_name"] for n in graph.values() if n["class_type"] == "LoraLoader"] == [
+        "person.safetensors",
+        "style.safetensors",
+    ]
+    assert graph["3"]["inputs"]["model"] == ["22", 0] and graph["15"]["inputs"]["mask"] == MASK_CANONICAL_B64
+
 
 # --- never in a repr -----------------------------------------------------------------------------------------
 

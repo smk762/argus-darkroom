@@ -161,12 +161,28 @@ class ComfyUIClient:
         return len(ours)
 
     def interrupt(self, prompt_id: str) -> None:
-        """Stop *prompt_id* and drop it from the queue. Best effort."""
-        for path, body in (("/queue", {"delete": [prompt_id]}), ("/interrupt", {})):
-            try:
-                self._request("POST", path, body)
-            except GenerationError as exc:
-                logger.warning("comfyui.interrupt_failed", prompt_id=prompt_id, error=str(exc))
+        """Drop *prompt_id* from the queue, and stop it only if it is the prompt running. Best effort.
+
+        ComfyUI is shared: a bare ``/interrupt`` stops whatever is running, which may be another client's job (ours
+        still queued behind it, or just finished). So it is sent only when ``/queue`` shows ours running, and names
+        the prompt, which a ComfyUI that knows ``prompt_id`` also checks.
+        """
+        try:
+            self._request("POST", "/queue", {"delete": [prompt_id]})
+        except GenerationError as exc:
+            logger.warning("comfyui.interrupt_failed", prompt_id=prompt_id, error=str(exc))
+        try:
+            queue = self._request("GET", "/queue")
+        except GenerationError as exc:
+            logger.warning("comfyui.interrupt_failed", prompt_id=prompt_id, error=str(exc))
+            return
+        running = queue.get("queue_running") if isinstance(queue, dict) else None
+        if not any(isinstance(e, list) and len(e) > 1 and e[1] == prompt_id for e in running or []):
+            return
+        try:
+            self._request("POST", "/interrupt", {"prompt_id": prompt_id})
+        except GenerationError as exc:
+            logger.warning("comfyui.interrupt_failed", prompt_id=prompt_id, error=str(exc))
 
     # -- render -----------------------------------------------------------------------------------------
 
@@ -193,6 +209,8 @@ class ComfyUIClient:
                 prompt_id = self._prompt_id(resp)
                 image = self._read(ws, prompt_id, save_node_id, deadline, on_progress)
         except (WebSocketException, OSError) as exc:
+            if prompt_id is not None:
+                self.interrupt(prompt_id)  # its image can no longer reach us: do not leave it holding the GPU
             raise GenerationError(f"ComfyUI websocket failed: {exc}") from exc
         except GenerationError:
             if prompt_id is not None and time.monotonic() >= deadline:

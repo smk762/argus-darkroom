@@ -5,11 +5,14 @@
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
 ``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
-``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``
+``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``.
+                          ``X-Argus-Priority`` picks the GPU lease class (``interactive`` by default)
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
 ``GET /image/{id}``       ids only, no path input; 404 with the record id when there is no stored image
-``DELETE /record/{id}``   the user removing their own output: the file goes, the record stays
-``GET /archive``          a streamed zip of every record and every stored image (read-only, always on)
+``DELETE /record/{id}``   the user removing their own output: the file goes (its depth map too), the record stays
+``POST /depth/{id}``      a depth map of the record's stored image (idempotent; shares the generation lock)
+``GET /depth/{id}``       that depth map, as an 8-bit greyscale PNG; 404 with the record id when there is none
+``GET /archive``          a streamed zip of every record, stored image and depth map (read-only, always on)
 ``POST /purge``           everything, from a clean slate; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ``POST /purge/{id}``      one record and its image; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ========================  =====================================================================================
@@ -17,12 +20,17 @@
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
 ``cross_site_refuse``, because CORS alone is not a write boundary). The server binds to localhost by default.
 With ``ARGUS_DARKROOM_READ_ONLY=1`` every write is refused from every origin, ``POST /preflight`` included.
+
+One generation runs at a time and a second gets 409, unless the GPU coordinator is the broker (argus-iris): then up to
+:data:`~argus_darkroom.gpu.MAX_IN_FLIGHT` run at once, each waiting for its own lease, and iris queues them by
+priority. A purge always waits for none to be running.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import re
@@ -35,22 +43,24 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
 import structlog
+from argus_cortex.gpu_wire import PriorityClass
+from argus_cortex.moderation import NudeNetClient
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import WriteGuard, constant_refuse, cross_site_refuse
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from argus_darkroom import __version__
+from argus_darkroom import __version__, gpu
 from argus_darkroom.age import HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
 from argus_darkroom.modelfiles import pick_default
-from argus_darkroom.models import GenerationRecord, Outcome
+from argus_darkroom.models import DepthRecord, GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
-from argus_darkroom.store import valid_id
+from argus_darkroom.store import DEPTH_SUFFIX, valid_id
 from argus_darkroom.workflow import checkpoint_family
 
 logger = structlog.get_logger()
@@ -71,6 +81,16 @@ def probe(url: str) -> bool:
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return True
+
+
+def nudenet_detector(client: NudeNetClient | None) -> str | None:
+    """The NudeNet detector the server reports (``640m``, ``320n``), or ``None``. Never raises: it is only reported."""
+    if client is None:
+        return None
+    try:
+        return client.info().detector
+    except Exception:  # an unreachable server is already in "backends"
+        return None
 
 
 READ_ONLY_REFUSAL = "argus-darkroom is read-only: generation, pre-flight and record changes are disabled"
@@ -96,6 +116,70 @@ def rule_names(policy: str) -> dict[str, str]:
 
 def sse(kind: str, data: object) -> bytes:
     return f"event: {kind}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+class RunGate:
+    """Generations and depth runs share it (:meth:`enter`); a purge takes it alone (:meth:`acquire`).
+
+    Up to *limit* shared runs at once, and none while a purge holds it. ``acquire``, ``release`` and ``locked`` keep the
+    shape of the lock this replaced.
+    """
+
+    def __init__(self, limit: int = 1) -> None:
+        self.limit = max(1, limit)
+        self._cond = threading.Condition()
+        self._running = 0
+        self._exclusive = False
+        self._waiting_exclusive = 0  # blocked in acquire: no new shared run starts, so the purge cannot starve
+
+    @property
+    def running(self) -> int:
+        return self._running
+
+    def enter(self) -> bool:
+        """Start a shared run, or ``False`` at once when the limit is reached or a purge is running or waiting."""
+        with self._cond:
+            if self._exclusive or self._waiting_exclusive or self._running >= self.limit:
+                return False
+            self._running += 1
+            return True
+
+    def leave(self) -> None:
+        with self._cond:
+            self._running -= 1
+            self._cond.notify_all()
+
+    def acquire(self, blocking: bool = True) -> bool:
+        """Take it alone: no shared run and no other purge."""
+        with self._cond:
+            if not blocking:
+                if self._exclusive or self._running:
+                    return False
+            else:
+                self._waiting_exclusive += 1
+                try:
+                    while self._exclusive or self._running:
+                        self._cond.wait()
+                finally:
+                    self._waiting_exclusive -= 1
+            self._exclusive = True
+            return True
+
+    def release(self) -> None:
+        with self._cond:
+            self._exclusive = False
+            self._cond.notify_all()
+
+    def locked(self) -> bool:
+        return self._exclusive or self._running > 0
+
+
+def priority_of(x_argus_priority: str | None = Header(None)) -> PriorityClass:
+    """The GPU lease class from ``X-Argus-Priority``: mint's sample runs send ``batch``, a person's form nothing."""
+    try:
+        return gpu.parse_priority(x_argus_priority)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class _Sink(io.RawIOBase):
@@ -124,7 +208,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     cfg = engine.settings
     app = FastAPI(title="Argus Darkroom", description="Guarded image generation.", version=__version__)
     app.state.engine = engine
-    busy = threading.Lock()  # held for the whole of one generation (or a purge)
+    # Entered for the whole of each generation or depth run, taken alone by a purge. One run at a time, unless the GPU
+    # broker queues them: then each waits for its own lease and the gate only bounds how many may wait.
+    busy = RunGate(gpu.MAX_IN_FLIGHT if gpu.queues(engine.gpu) else 1)
     app.state.busy = busy
     # Held while a stored record changes, so a removal that read a record cannot save it back over a purge. Separate from
     # busy, which would refuse every removal during a generation.
@@ -147,6 +233,11 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         allow_headers=["*"],
     )
 
+    def busy_detail() -> str:
+        if busy.limit == 1:
+            return "a generation or depth map is already running"
+        return f"{busy.limit} generations or depth maps are already queued or running"
+
     def record_or_404(record_id: str) -> GenerationRecord:
         record = engine.store.load(record_id) if valid_id(record_id) else None
         if record is None:
@@ -164,27 +255,37 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         }
         # Re-probe the estimator the engine actually uses, alongside the other backends; the boot status is stale.
         remote = engine.scanner.age if isinstance(engine.scanner.age, HttpAgeEstimator) else None
-        with ThreadPoolExecutor(len(urls) + 1) as pool:
+        with ThreadPoolExecutor(len(urls) + 2) as pool:
             age_future = pool.submit(remote_age_status, remote.base_url) if remote is not None else None
+            detector_future = pool.submit(nudenet_detector, engine.scanner.nudenet)
             up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
             age = age_future.result() if age_future is not None else engine.age_status
+            detector = detector_future.result()
         return {
             "version": __version__,
             # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
             # the age check can run; `age_unavailable` says why not.
             "backends": {**up, "age": age.available},
             "age_unavailable": age.reason,
+            # How the minor-exposed rule places exposure: "frame" or "overlap" (ARGUS_DARKROOM_MINOR_EXPOSED).
+            "minor_exposed": cfg.minor_exposed,
             "policies": list(policy_table.POLICIES),
             "default_policy": cfg.policy,
             "thinking": cfg.thinking,
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
+            # The NudeNet detector the server reports ("640m", "320n"), or null when it does not say or is unreachable.
+            "nudenet_detector": detector,
             "expansion_enabled": cfg.expansion_enabled,
             "workflow_loaded": engine.workflows is not None,
             "workflows": engine.workflows.names if engine.workflows else [],
             "devmode": cfg.devmode,
             "read_only": cfg.read_only,
+            # True only for demo/run.py's fake backends: nothing it "generates" touches a GPU.
+            "demo": cfg.demo,
             "generating": busy.locked(),
+            # ARGUS_GPU_COORDINATOR (none, lease or broker); how many runs are in flight, and how many may be.
+            "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
         }
 
     @app.get("/policies")
@@ -251,16 +352,18 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         return engine.preflight_view(request, result) | {"expansion_applied": False}
 
     @app.post("/generate/stream")
-    async def generate_stream(request: GenerateRequest) -> StreamingResponse:
-        if not busy.acquire(blocking=False):
-            raise HTTPException(409, "a generation is already running")
+    async def generate_stream(
+        request: GenerateRequest, priority: PriorityClass = Depends(priority_of)
+    ) -> StreamingResponse:
+        if not busy.enter():
+            raise HTTPException(409, busy_detail())
         try:
-            run = await run_in_threadpool(engine.begin, request)
+            run = await run_in_threadpool(engine.begin, request, priority)
         except RequestError as exc:
-            busy.release()
+            busy.leave()
             raise HTTPException(400, str(exc)) from exc
         except BaseException:
-            busy.release()
+            busy.leave()
             raise
 
         loop = asyncio.get_running_loop()
@@ -277,7 +380,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 logger.exception("generate.failed")
                 put(("error", {"detail": "the generation failed unexpectedly; no image was released"}))
             finally:
-                busy.release()  # the run goes on to its record even if the client has hung up
+                busy.leave()  # the run goes on to its record even if the client has hung up
                 put(None)
 
         threading.Thread(target=work, name="darkroom-generate", daemon=True).start()
@@ -333,21 +436,86 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 return found
             if found.image is None or found.image.path is None:
                 raise HTTPException(409, "this record has no stored image to remove")
-            engine.store.remove_image(record_id)
+            engine.store.remove_image(record_id)  # and its depth map
             found.image.path = None
+            found.depth = None
             found.removed_at = datetime.now(UTC)
             engine.store.save(found)
             return found
 
+    # -- depth maps --------------------------------------------------------------------------------------
+    def stored_image(found: GenerationRecord) -> bytes:
+        """The record's stored image, checked against the record's hash. 409 when it has none."""
+        path = engine.store.image_path(found.id)
+        if found.image is None or found.image.path is None or found.removed_at is not None or not path.is_file():
+            raise HTTPException(409, "this record has no stored image")
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != found.image.sha256:
+            raise HTTPException(409, "the stored image does not match its record")
+        return data
+
+    @app.post("/depth/{record_id}")
+    async def make_depth(record_id: str, priority: PriorityClass = Depends(priority_of)) -> DepthRecord:
+        """A depth map of the record's stored image, computed once and kept beside it.
+
+        No pre-flight and no scan: the image was already judged and released, and nothing new (no prompt, no imagery)
+        goes in. See :mod:`argus_darkroom.depth`. A write: ``WriteGuard`` and read-only cover it like every POST.
+        """
+        found = record_or_404(record_id)
+        if found.depth is not None and engine.store.depth_path(record_id).is_file():
+            return found.depth  # already made: never recomputed
+        image = await run_in_threadpool(stored_image, found)  # a file read: off the event loop
+        if not busy.enter():
+            raise HTTPException(409, busy_detail())
+
+        def compute() -> DepthRecord:
+            try:
+                depth_map, depth_record = engine.depth(found, image, priority)
+            except GenerationError as exc:
+                logger.warning("depth.failed", record_id=record_id, error=str(exc))
+                raise HTTPException(502, f"the depth map could not be made: {exc}") from exc
+            with record_lock:
+                # Read again: the image may have been removed, or the record purged, while ComfyUI ran.
+                current = record_or_404(record_id)
+                if current.depth is not None and engine.store.depth_path(record_id).is_file():
+                    return current.depth
+                if current.image is None or current.image.path is None or current.removed_at is not None:
+                    raise HTTPException(409, "this record has no stored image")
+                engine.store.write_depth(record_id, depth_map.png)
+                current.depth = depth_record
+                try:
+                    engine.store.save(current)
+                except Exception:
+                    engine.store.depth_path(record_id).unlink(missing_ok=True)
+                    raise
+                return depth_record
+
+        try:
+            return await run_in_threadpool(compute)
+        finally:
+            busy.leave()
+
+    @app.get("/depth/{record_id}")
+    def depth_image(record_id: str):
+        found = record_or_404(record_id)
+        path = engine.store.depth_path(record_id)
+        if found.depth is None or not path.is_file():
+            return JSONResponse(
+                {"detail": "this record has no depth map", "record_id": record_id, "outcome": found.outcome},
+                status_code=404,
+            )
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
     @app.get("/archive")
     def archive() -> StreamingResponse:
-        """Every record (JSON) and every stored image, as one zip. Deleted and omitted images were never
-        written, so they are not in it."""
+        """Every record (JSON), every stored image and every depth map (``depth/<id>.png``), as one zip. Deleted and
+        omitted images were never written, so they are not in it."""
         store = engine.store
 
         def stream() -> Iterator[bytes]:
             sink = _Sink()
             with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+                # nosemgrep: handler-scans-all - export-all: streaming every record is the operation
                 for path in sorted(store.root.glob("*.json")):
                     if not valid_id(path.stem):
                         continue
@@ -356,6 +524,10 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                     image_path = store.root / f"{path.stem}.png"
                     if image_path.is_file():
                         zf.write(image_path, f"images/{image_path.name}")
+                        yield sink.take()
+                    depth_path = store.root / f"{path.stem}{DEPTH_SUFFIX}"
+                    if depth_path.is_file():
+                        zf.write(depth_path, f"depth/{path.stem}.png")
                         yield sink.take()
             yield sink.take()
 
@@ -408,8 +580,11 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 # In a worker thread: waiting on record_lock must not block the event loop.
                 removed = {"records": 0, "images": 0}
                 with record_lock:
+                    # nosemgrep: handler-scans-all - purge-all: visiting every record is the operation
                     for path in engine.store.root.iterdir():
-                        if valid_id(path.stem) and path.suffix in (".json", ".png"):
+                        if path.name.endswith(DEPTH_SUFFIX) and valid_id(path.name.removesuffix(DEPTH_SUFFIX)):
+                            path.unlink(missing_ok=True)  # derived from an image; counted with neither
+                        elif valid_id(path.stem) and path.suffix in (".json", ".png"):
                             path.unlink(missing_ok=True)
                             removed["records" if path.suffix == ".json" else "images"] += 1
                         elif path.name.endswith((".json.tmp", ".png.tmp")):
@@ -418,11 +593,16 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
 
             try:
                 removed = await run_in_threadpool(purge_files)
-                try:
-                    history: int | None = await run_in_threadpool(engine.comfyui.purge_history)
-                except GenerationError as exc:
-                    logger.warning("purge.history_failed", error=str(exc))
-                    history = None  # ComfyUI could not be reached: said so, not hidden
+                history: int | None = 0
+                # The configured ComfyUI and every one the GPU broker sent work to.
+                for comfyui in engine.comfyui_clients():
+                    try:
+                        cleared = await run_in_threadpool(comfyui.purge_history)
+                    except GenerationError as exc:
+                        logger.warning("purge.history_failed", error=str(exc))
+                        history = None  # a ComfyUI could not be reached: said so, not hidden
+                    else:
+                        history = None if history is None else history + cleared
                 return removed | {"comfyui_history": history}
             finally:
                 busy.release()

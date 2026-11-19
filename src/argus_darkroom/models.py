@@ -28,6 +28,8 @@ Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$", description="lowercase 
 Outcome = Literal["refused", "passed", "review", "deleted", "omitted", "failed"]
 Mode = Literal["sfw", "nsfw"]
 CellState = Literal["safe", "flagged", "illegal", "unchecked"]
+# How the minor-exposed rule places exposure: anywhere in the frame, or by box overlap (ARGUS_DARKROOM_MINOR_EXPOSED).
+MinorExposedRule = Literal["frame", "overlap"]
 
 _Versioned = make_versioned_base(
     "record_version", RECORD_VERSION, SUPPORTED_RECORD_MAJORS, label="record_version", class_name="_Versioned"
@@ -137,17 +139,35 @@ class ScanCells(BaseModel):
     with_prompt: Cell
 
 
+class NudeNetBox(BaseModel):
+    """One NudeNet detection: a class, its score and where it is. A box, never pixels."""
+
+    label: str
+    score: float
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels
+
+
 class NudeNetRecord(BaseModel):
     """What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not
     configured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it."""
 
     exposed_score: float | None
     labels: dict[str, float] = Field(default_factory=dict)
+    # Every detection NudeNet reported (all score >= 0.2), so an ``overlap`` minor-exposed decision can be recomputed
+    # from the record. Empty when it did not answer, and in records from before boxes were kept.
+    detections: list[NudeNetBox] = Field(default_factory=list)
     # The user's ``nsfw_threshold`` (blur). The SFW gate is a fixed 0.2 and ignores it.
     threshold: float
     # Whether safelight blurs the image until the user reveals it. True under an NSFW policy when NudeNet scores it at
     # or above the threshold, or did not answer. Always false under an SFW policy.
     blur: bool
+    # The NudeNet detector that scored the image, as its server reports it (cortex's ``NudeNetClient.info()``):
+    # "640m", "320n", or null when NudeNet did not answer, the server did not say (the upstream 320n image has no
+    # /health), or names another model. 640m and 320n score the same image differently, so the scores (and the
+    # threshold they were judged against) are comparable only within one detector. Null in older records.
+    detector: str | None = None
+    # The weights file the server named (e.g. "640m.onnx"), or null.
+    detector_model: str | None = None
 
 
 class FaceAge(BaseModel):
@@ -157,10 +177,28 @@ class FaceAge(BaseModel):
     bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
 
 
+class PersonAge(BaseModel):
+    """One person (body) box from curator's person detector, with its MiVOLO estimate when it has one.
+
+    ``face_index`` is the face in :attr:`AgeRecord.faces` this person was matched to, or ``None`` for a body with
+    no face. A matched person's estimate may be ``None``: the face carries it. An unmatched person's estimate is
+    also in :attr:`AgeRecord.faces`, so ``faces`` alone still holds every estimate.
+    """
+
+    bbox: tuple[float, float, float, float]  # x, y, w, h in pixels, as curator reports it
+    age_estimate_years: float | None = None
+    face_index: int | None = None
+
+
 class AgeRecord(BaseModel):
     source: Literal["mivolo"] = "mivolo"
+    # Every estimate: each face, then each person with no face (a faceless minor is still a minor).
     faces: list[FaceAge] = Field(default_factory=list)
+    # Every person box, matched or not. Empty when the estimator found none or does not report them.
+    people: list[PersonAge] = Field(default_factory=list)
     minor_exposed: bool = False
+    # Which rule decided minor_exposed. Records from before the setting existed used "frame".
+    minor_exposed_rule: MinorExposedRule = "frame"
 
 
 class InputScanRecord(BaseModel):
@@ -205,6 +243,23 @@ class ImageRecord(BaseModel):
     path: str | None = None
 
 
+class DepthRecord(BaseModel):
+    """A depth map derived from the record's stored image (``POST /depth/{id}``), never from a new prompt.
+
+    The PNG is 8-bit greyscale at the image's size, near bright (255) and far dark (0), stretched min to max per image,
+    with no metadata. ``sha256`` is of the stored PNG's bytes. ``workflow`` names darkroom's built-in depth graph.
+    """
+
+    model: str
+    model_license: str
+    sha256: Sha256
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    workflow: str
+    engine_version: str | None = None
+
+
 class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     id: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -221,6 +276,8 @@ class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     image: ImageRecord | None = None
     # Set when the user removed their own output (``DELETE /record/{id}``): the file is gone, the record stays.
     removed_at: datetime | None = None
+    # A depth map of the stored image, when one was asked for. null otherwise, and again once the image is removed.
+    depth: DepthRecord | None = None
 
 
 def render_wire_schema() -> str:

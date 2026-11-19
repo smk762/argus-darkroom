@@ -19,10 +19,11 @@ from dataclasses import dataclass
 
 import structlog
 from argus_cortex.moderation import CheckFailed, NsfwResult, NudeNetClient
+from argus_cortex.moderation.nudenet import NudeNetInfo
 
-from argus_darkroom.age import AgeEstimator
+from argus_darkroom.age import AgeEstimator, read_ages
 from argus_darkroom.guard import Guard
-from argus_darkroom.models import Cell, FaceAge, ScanCells
+from argus_darkroom.models import AgeRecord, Cell, ScanCells
 
 logger = structlog.get_logger()
 
@@ -33,7 +34,10 @@ OnCell = Callable[[str, str, Cell], None]  # (policy, "isolated" | "with_prompt"
 class Scan:
     scans: dict[str, ScanCells]
     nsfw: NsfwResult | None  # None: NudeNet is not configured, or did not answer
-    faces: list[FaceAge] | None  # None: the age check is unavailable, or failed for this image
+    age: AgeRecord | None  # None: the age check is unavailable, or failed for this image
+    # Which model the NudeNet server says it runs, asked after it scored this image. None: it was not asked (no score),
+    # or could not say. Recorded with the score, never used to decide: 640m and 320n score the same image differently.
+    nudenet_info: NudeNetInfo | None = None
 
 
 class Scanner:
@@ -59,7 +63,9 @@ class Scanner:
             if on_cell:
                 on_cell(policy, "with_prompt", with_prompt)
             scans[policy] = ScanCells(isolated=isolated, with_prompt=with_prompt)
-        return Scan(scans=scans, nsfw=self._nudenet(data), faces=self._ages(data))
+        nsfw = self._nudenet(data)
+        info = self._nudenet_info() if nsfw is not None else None
+        return Scan(scans=scans, nsfw=nsfw, age=self._ages(data), nudenet_info=info)
 
     def _nudenet(self, data: bytes) -> NsfwResult | None:
         if self.nudenet is None:
@@ -72,11 +78,23 @@ class Scanner:
             logger.exception("nudenet.unexpected_error")
         return None
 
-    def _ages(self, data: bytes) -> list[FaceAge] | None:
+    def _nudenet_info(self) -> NudeNetInfo | None:
+        """The model the NudeNet server runs. A failure here costs only the record's ``detector``, never the score."""
+        if self.nudenet is None:
+            return None
+        try:
+            return self.nudenet.info()
+        except CheckFailed as exc:
+            logger.warning("nudenet.info_failed", error=str(exc))
+        except Exception:
+            logger.exception("nudenet.info_unexpected_error")
+        return None
+
+    def _ages(self, data: bytes) -> AgeRecord | None:
         if self.age is None:
             return None
         try:
-            return self.age.estimate(data)
+            return read_ages(self.age, data)
         except Exception as exc:
             # Includes AgeUnavailable. The minors rule then rests on SingGuard alone, as when the check is off.
             logger.warning("age.failed", error=str(exc))

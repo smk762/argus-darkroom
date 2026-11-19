@@ -210,3 +210,24 @@ def test_an_advisory_policy_flagging_the_expansion_does_not_refuse_it_but_sends_
     record = rig.generate(rig.engine(), expand=True, advisory_policies=["adult"])
     assert record.outcome == "review" and record.image is not None  # rendered, then held for a person
     assert record.guard.preflight["adult"].state == "flagged"
+
+
+def test_comfyui_receives_exactly_the_text_singguard_judged(rig, ollama) -> None:
+    """Check then use: the text pre-flight judged, expansion included, is the graph's text, and it was judged first."""
+    ollama.reply = "a cat on a rug"
+    with_ollama(rig, ollama)
+    graphs_at_check: list[int] = []
+
+    def respond(body):
+        if not is_image_scan(body):
+            graphs_at_check.append(len(rig.comfyui.graphs))
+        return 200, safe_answer()
+
+    rig.singguard.responder = respond
+    record = rig.generate(rig.engine(), expand=True)
+    assert record.outcome == "passed"
+    (graph,) = rig.comfyui.graphs
+    judged = [b["input"] for b in rig.singguard.requests if not is_image_scan(b)]
+    assert judged == [frame(graph["6"]["inputs"]["text"], graph["7"]["inputs"]["text"])]
+    assert "a cat on a rug" in graph["6"]["inputs"]["text"]
+    assert graphs_at_check == [0]  # before anything reached ComfyUI

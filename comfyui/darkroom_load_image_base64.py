@@ -19,22 +19,32 @@ import base64
 import io
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
+
+
+def _open_upright(data_base64: str) -> Image.Image:
+    """Decode, turn upright by the EXIF orientation (as ComfyUI's ``LoadImage`` and darkroom's ``images.py`` do), and
+    bring a 16-bit greyscale PNG down to 8 bits by scaling: Pillow's ``convert("L")`` would clip it to white."""
+    data = base64.b64decode(data_base64, validate=True)
+    with Image.open(io.BytesIO(data), formats=("PNG", "JPEG", "WEBP")) as img:
+        upright = ImageOps.exif_transpose(img)
+        upright.load()
+    if upright.mode.startswith("I"):
+        upright = upright.convert("I").point(lambda v: v * (1 / 256)).convert("L")
+    return upright
 
 
 def decode(image: str) -> np.ndarray:
-    """*image* (base64 of a PNG, JPEG or WebP) as float32 RGB in 0..1, shape (H, W, 3). Only the first frame."""
-    data = base64.b64decode(image, validate=True)
-    with Image.open(io.BytesIO(data), formats=("PNG", "JPEG", "WEBP")) as img:
-        rgb = img.convert("RGB")
+    """*image* (base64 of a PNG, JPEG or WebP) as float32 RGB in 0..1, shape (H, W, 3), upright. Only the first
+    frame."""
+    rgb = _open_upright(image).convert("RGB")
     return np.asarray(rgb, dtype=np.float32) / 255.0
 
 
 def decode_mask(mask: str) -> np.ndarray:
-    """*mask* (base64 of a PNG, JPEG or WebP) as float32 greyscale in 0..1, shape (H, W). Only the first frame."""
-    data = base64.b64decode(mask, validate=True)
-    with Image.open(io.BytesIO(data), formats=("PNG", "JPEG", "WEBP")) as img:
-        grey = img.convert("L")
+    """*mask* (base64 of a PNG, JPEG or WebP) as float32 greyscale in 0..1, shape (H, W), upright. Only the first
+    frame."""
+    grey = _open_upright(mask).convert("L")
     return np.asarray(grey, dtype=np.float32) / 255.0
 
 

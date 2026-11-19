@@ -1,4 +1,5 @@
-"""The record store: one flat ``<id>.json`` per record, images beside them as ``<id>.png``.
+"""The record store: one flat ``<id>.json`` per record, images beside them as ``<id>.png`` and an image's depth map,
+when one was asked for, as ``<id>.depth.png``.
 
 The same pattern as curator's ``ScanStore``. Ids are generated here and checked on the way in, never
 joined into a path as given, so a crafted id cannot leave the root.
@@ -7,6 +8,7 @@ joined into a path as given, so a crafted id cannot leave the root.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from pathlib import Path
@@ -15,6 +17,7 @@ from typing import Literal
 from argus_darkroom.models import GenerationRecord, Outcome
 
 _ID = re.compile(r"^[0-9a-f]{32}$")
+DEPTH_SUFFIX = ".depth.png"
 
 
 def new_id() -> str:
@@ -22,7 +25,42 @@ def new_id() -> str:
 
 
 def valid_id(record_id: str) -> bool:
-    return bool(_ID.match(record_id))
+    return bool(_ID.fullmatch(record_id))
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Make a rename in *directory* durable. Best effort: not every platform can open a directory."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _write_atomic(path: Path, data: bytes) -> str:
+    """Write *data* to *path* so a reader, or a crash, sees the old file or the whole new one, never part of one.
+
+    The temp file is this write's own (``<id>.<random>.<suffix>.tmp``, so concurrent writers to one path cannot share
+    it, and ``/purge`` and :meth:`RecordStore.delete` still find what a crash left). Its bytes reach the disk before
+    the rename, and the rename before this returns.
+    """
+    record_id, _, rest = path.name.partition(".")
+    tmp = path.with_name(f"{record_id}.{uuid.uuid4().hex}.{rest}.tmp")
+    try:
+        with tmp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        _fsync_dir(path.parent)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return path.name
 
 
 class RecordStore:
@@ -40,12 +78,15 @@ class RecordStore:
             raise ValueError("not a record id")
         return self.root / f"{record_id}.png"
 
+    def depth_path(self, record_id: str) -> Path:
+        if not valid_id(record_id):
+            raise ValueError("not a record id")
+        return self.root / f"{record_id}{DEPTH_SUFFIX}"
+
     def save(self, record: GenerationRecord) -> Path:
         path = self.record_path(record.id)
         # Replace atomically so a reader never sees a half-written record.
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(record.model_dump_json(), encoding="utf-8")
-        tmp.replace(path)
+        _write_atomic(path, record.model_dump_json().encode("utf-8"))
         return path
 
     def write_image(self, record_id: str, data: bytes) -> str:
@@ -53,16 +94,16 @@ class RecordStore:
 
         Only the release step calls this, after the verdict. A deleted or omitted image never gets here.
         """
-        path = self.image_path(record_id)
-        tmp = path.with_suffix(".png.tmp")
-        try:
-            tmp.write_bytes(data)
-            tmp.replace(path)
-        finally:
-            tmp.unlink(missing_ok=True)
-        return path.name
+        return _write_atomic(self.image_path(record_id), data)
+
+    def write_depth(self, record_id: str, data: bytes) -> str:
+        """Write a depth map of a stored image, atomically, and return its file name under the root."""
+        return _write_atomic(self.depth_path(record_id), data)
 
     def remove_image(self, record_id: str) -> None:
+        """Remove a stored image and the depth map derived from it (the depth map first: never one without its
+        image)."""
+        self.depth_path(record_id).unlink(missing_ok=True)
         self.image_path(record_id).unlink(missing_ok=True)
 
     def exists(self, record_id: str) -> bool:
@@ -70,15 +111,16 @@ class RecordStore:
         return valid_id(record_id) and self.record_path(record_id).is_file()
 
     def delete(self, record_id: str) -> int:
-        """Remove a record, any image it kept and what a crash left. The number of images removed, 0 or 1.
+        """Remove a record, any image it kept (and its depth map) and what a crash left. The number of images removed,
+        0 or 1.
 
         The image goes first: if a removal fails, the record stays to find it by, rather than an image with no record.
         """
         record, image = self.record_path(record_id), self.image_path(record_id)
         kept = image.is_file()
         self.remove_image(record_id)
-        image.with_suffix(".png.tmp").unlink(missing_ok=True)
-        record.with_suffix(".json.tmp").unlink(missing_ok=True)
+        for tmp in self.root.glob(f"{record_id}.*.tmp"):  # an interrupted write's temp file, of any of its files
+            tmp.unlink(missing_ok=True)
         record.unlink(missing_ok=True)
         return int(kept)
 

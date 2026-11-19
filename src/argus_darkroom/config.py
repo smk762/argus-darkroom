@@ -10,10 +10,16 @@ from argus_cortex.moderation import THINKING_MODES
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import env_flag
 
+from argus_darkroom.models import MinorExposedRule
+
 PREFIX = "ARGUS_DARKROOM_"
 # Safelight's origins, published (3000) and `make dev` (3097): read from them by default, and the only ones trusted to
 # write unless others are named.
 LOCAL_ORIGINS = tuple(f"http://{host}:{port}" for port in (3000, 3097) for host in ("localhost", "127.0.0.1"))
+
+
+# How the minor-exposed rule places exposure (ARGUS_DARKROOM_MINOR_EXPOSED); the first is the default.
+MINOR_EXPOSED_RULES: tuple[MinorExposedRule, ...] = ("frame", "overlap")
 
 
 class ConfigError(ValueError):
@@ -28,6 +34,8 @@ class Settings:
     ollama_model: str = ""
     nudenet_url: str = ""  # empty: SFW generation is unavailable
     age_url: str = ""  # curator's POST /faces?body=true; empty falls back to the in-process [age] extra
+    # frame: any age estimate under 18 plus exposure anywhere; overlap: exposure placed on a young person's box
+    minor_exposed: MinorExposedRule = "frame"
     policy: str = "default"
     thinking: str = "cascade"
     output_root: Path = Path("darkroom-output")
@@ -39,12 +47,19 @@ class Settings:
     allow_nsfw: bool = False
     devmode: bool = False
     read_only: bool = False  # refuse every write; /health reports it
+    # The demo server (demo/run.py, fake backends). Set only there, never from the environment, so a client can tell
+    # the demo from a server that renders on a GPU: a test that generates checks /health before it sends anything.
+    demo: bool = False
     # Origins allowed to read and, if named, to write. ``*`` allows anonymous reads from anywhere, never writes.
     cors_origins: tuple[str, ...] = LOCAL_ORIGINS
 
     def __post_init__(self) -> None:
         if not self.singguard_url.strip():
             raise ConfigError(f"{PREFIX}SINGGUARD_URL is empty: darkroom never runs unguarded")
+        if self.minor_exposed not in MINOR_EXPOSED_RULES:
+            raise ConfigError(
+                f"{PREFIX}MINOR_EXPOSED is {self.minor_exposed!r}: it must be one of {', '.join(MINOR_EXPOSED_RULES)}"
+            )
         if self.thinking not in THINKING_MODES:
             raise ConfigError(f"{PREFIX}THINKING must be one of {', '.join(THINKING_MODES)}")
         try:
@@ -67,23 +82,25 @@ class Settings:
     def from_env(cls) -> Settings:
         """Read ``os.environ``. Flags go through cortex's ``env_flag``, which warns about a mistyped value."""
 
-        def get(name: str, default: str = "") -> str:
-            return os.environ.get(PREFIX + name, default).strip()
+        def get(name: str) -> str:
+            """The value, or "" when unset or blank (``VAR=${VAR:-}`` in compose): a blank never beats a default."""
+            return os.environ.get(PREFIX + name, "").strip()
 
         allow_nsfw = env_flag(PREFIX + "ALLOW_NSFW")
         defaults = cls.__dataclass_fields__
         return cls(
             singguard_url=get("SINGGUARD_URL"),
-            comfyui_url=get("COMFYUI_URL", defaults["comfyui_url"].default),
+            comfyui_url=get("COMFYUI_URL") or defaults["comfyui_url"].default,
             ollama_url=get("OLLAMA_URL"),
             ollama_model=get("OLLAMA_MODEL"),
             nudenet_url=get("NUDENET_URL"),
             age_url=get("AGE_URL"),
+            minor_exposed=get("MINOR_EXPOSED") or defaults["minor_exposed"].default,
             policy=get("POLICY") or ("adult-granular" if allow_nsfw else "default"),
-            thinking=get("THINKING", "cascade"),
+            thinking=get("THINKING") or defaults["thinking"].default,
             output_root=Path(get("OUTPUT_ROOT") or "darkroom-output"),
             models_root=Path(p) if (p := get("MODELS_ROOT")) else None,
-            default_checkpoint=get("DEFAULT_CHECKPOINT", defaults["default_checkpoint"].default),
+            default_checkpoint=get("DEFAULT_CHECKPOINT") or defaults["default_checkpoint"].default,
             workflow=Path(p) if (p := get("WORKFLOW")) else None,
             allow_nsfw=allow_nsfw,
             devmode=env_flag(PREFIX + "DEVMODE"),

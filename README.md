@@ -1,4 +1,9 @@
-# argus-darkroom
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/darkroom/argus-darkroom-lockup-dark.svg">
+    <img alt="argus-darkroom" src="https://raw.githubusercontent.com/smk762/argus-cortex/dev/brand/packages/darkroom/argus-darkroom-lockup-light.svg" height="52">
+  </picture>
+</h1>
 
 Guarded image generation for the Argus suite. A prompt is checked before anything is generated. Each output is checked
 twice, once on its own and once alongside the prompt that made it, and only then released or destroyed. A record is kept
@@ -115,6 +120,25 @@ curl -s localhost:8188/object_info/DarkroomLoadMaskBase64 | head -c 200
 An empty `{}` means ComfyUI has not loaded it; an image-to-image or inpainting run then fails (`failed`) after its
 input scan.
 
+### ComfyUI: the `DarkroomDepthAnything` node (depth maps)
+
+`POST /depth/{id}` makes a depth map of a record's stored image with Depth Anything V2 Small, through a node vendored in
+this repo: [`comfyui/darkroom_depth.py`](comfyui/darkroom_depth.py). It loads the model with `transformers` from a local
+folder under ComfyUI's models directory and never downloads at run time. Only the Small model (Apache-2.0) loads:
+Depth Anything V2 Base and Large are CC-BY-NC-4.0, so any other name, or a folder whose `config.json` is not the Small
+model's, is refused. One-time setup, beside the base64 loader above (which the depth graph also uses):
+
+```bash
+huggingface-cli download depth-anything/Depth-Anything-V2-Small-hf \
+    --local-dir /path/to/ComfyUI/models/depth/Depth-Anything-V2-Small-hf
+cp comfyui/darkroom_depth.py comfyui/darkroom_load_image_base64.py /path/to/ComfyUI/custom_nodes/
+# restart ComfyUI, then:
+curl -s localhost:8188/object_info/DarkroomDepthAnything | head -c 200
+```
+
+The depth graph is built into darkroom (`argus_darkroom/depth.py`), not a template: generation never selects it and
+`/models` does not list it. It needs no ComfyUI node beyond these and `SaveImageWebsocket`.
+
 ### Workflow templates
 
 A template is a ComfyUI API-format workflow with `$placeholders`: `$base_checkpoint`, `$vae`, `$positive`, `$negative`,
@@ -155,7 +179,7 @@ none). Records name the template in `request.workflow`, beside `workflow_sha256`
 
 | Family | Files | Sampling |
 |---|---|---|
-| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
 | `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
 | `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
 | `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |
@@ -176,8 +200,9 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 |---|---|---|
 | `SINGGUARD_URL` | | **Required.** |
 | `COMFYUI_URL` | `http://localhost:8188` | |
-| `NUDENET_URL` | | Empty: SFW generation unavailable. |
+| `NUDENET_URL` | | Empty: SFW generation unavailable. Point it at the suite's shared 640m server (argus-cortex#79) once it is up; each record names the detector that scored it. |
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra, or no age check. |
+| `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
@@ -191,6 +216,38 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
 
 `ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
+
+### GPU leases (argus-iris)
+
+Darkroom runs no model itself, but ComfyUI and Ollama do, on GPUs other services share. With the suite's GPU broker,
+[argus-iris](https://github.com/smk762/argus-iris), each render (and each depth map) holds a lease on `comfyui` and
+each prompt expansion one on `ollama:<OLLAMA_MODEL>`, for as long as the work runs. Iris queues them by priority,
+makes room first, and may name the node to send the work to: darkroom then calls that node's ComfyUI or Ollama
+instead of its own URL. The scans hold no lease: SingGuard, NudeNet and curator are tenants of their own. These are the
+suite's host-wide names, read by argus-cortex, not `ARGUS_DARKROOM_*`:
+
+| Variable | Default | |
+|---|---|---|
+| `ARGUS_GPU_COORDINATOR` | `none` | `broker` for iris; `lease` for a host-wide lock file; `none` gates nothing (as before). |
+| `ARGUS_GPU_BROKER_URL` | | Where iris listens, e.g. `http://<GPU_BROKER_HOST>:8120`. Use an IP: the container does not resolve LAN host names. |
+| `ARGUS_GPU_BROKER_TOKEN` | | The suite's shared caller token (`Authorization: Bearer`). A secret: the host's `.env` only. |
+| `ARGUS_GPU_TENANT_MANIFEST` | compose: `/app/gpu-tenant.yaml` | The committed [`gpu-tenant.yaml`](gpu-tenant.yaml), registered with iris on the first lease. Or `ARGUS_GPU_TENANT=argus-darkroom`. |
+| `ARGUS_GPU_BROKER_FALLBACK` | `lease` | Used while iris is unreachable, answers 5xx, or has no lease routes yet: `lease` or `none`. |
+| `ARGUS_GPU_LEASE_TIMEOUT_S` | 300 | How long a run waits for its lease. |
+
+- **Priority** comes from the caller's `X-Argus-Priority` header on `POST /generate/stream` and `POST /depth/{id}`:
+  `interactive` (the default: a person at safelight or studio), `batch` (mint's sample runs) or `background`.
+  `realtime` is taken as `interactive`; anything else is a 400. The CLI takes `--priority`.
+- **Queueing.** With `broker`, up to 8 generations and depth runs may be in flight at once, each waiting for its own
+  lease, so a second generation waits in iris's queue instead of getting a 409 (callers can drop their retry loops).
+  The SSE stream sends `queued` before the wait. A ninth still gets a 409, and a purge still waits for none to run.
+  With `none` or `lease`, one at a time as before.
+- **A lease is not an OOM.** A refused lease, one not granted in time, or a broker error is a `failed` record whose
+  reason says so; nothing retries it. A failed expansion lease is `expansion failed: ...` like any failed expansion.
+- **Every ComfyUI is checked.** The output-node check runs once per workflow on each ComfyUI darkroom renders on, the
+  prompt is deleted from the history of the ComfyUI that rendered it, and `POST /purge` clears every ComfyUI the
+  broker has sent work to since the server started.
+- In the container, the `lease` fallback orders darkroom's own runs only: no lock directory is shared with the host.
 
 Policies are chosen by name (`default`, `adult`, `adult-granular`, `adult-cautious`, `adult-cinematic`); a request cannot carry policy
 text. `default` and `sfw-*` are SFW, the rest NSFW. SFW refuses on any pre-flight flag and omits exposed output. NSFW
@@ -212,7 +269,7 @@ argus-darkroom version
 
 | Command | Options |
 |---|---|
-| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--json` (print the whole record instead of a summary) |
+| `generate PROMPT` | **Required:** `--checkpoint`, `--sampler`, `--scheduler`, `--steps`, `--cfg`, `--width`, `--height`. Darkroom does not invent sampling. **Optional:** `--guidance` (Flux; fills the template's `$guidance` slot), `--clip-skip` (1 to 12, default 1), `--seed` (default random, recorded), `--vae`, `--negative`/`-n`, `--lora NAME[:WEIGHT]` and `--trigger WORDS` (both repeatable; with several LoRAs each trigger is `NAME=word,word`), `--expand`, `--policy` (the enforcing policy; default the server's), `--advisory` (repeatable), `--thinking` (`fast`, `fast-slow`, `slow` or `cascade`), `--nsfw-threshold` (default 0.2), `--priority` (the GPU lease class, default `interactive`; see [GPU leases](#gpu-leases-argus-iris)), `--json` (print the whole record instead of a summary) |
 | `preflight PROMPT` | The text check alone: `--negative`/`-n`, `--policy`, `--advisory`, `--thinking`, `--trigger-word` (repeatable). Prints the verdicts as JSON |
 | `serve` | `--port`/`-p` (default 8106), `--host` (default `127.0.0.1`), `--output-root`, `--allow-nsfw`, `--cors-origin` (repeatable). Each overrides its `ARGUS_DARKROOM_*` variable |
 | `schema` | Writes `schema/darkroom-wire.schema.json`, or `--output`/`-o` somewhere else. `--check` exits 1 when the committed file is stale |
@@ -237,19 +294,30 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, age-check status, `workflows` (names) |
+| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
-| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. One at a time; a second gets 409 |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
-| `DELETE /record/{id}` | removes the user's own image; the record stays |
-| `GET /archive` | streamed zip of every record and stored image |
+| `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
+| `POST /depth/{id}` | a depth map of the record's stored image; returns the record's new `depth` object. 404 for no such record, 409 when the record has no stored image (deleted, omitted, refused, failed or removed) or the gate is full (it shares the generations' gate: one at a time, or eight with the GPU broker), 502 when ComfyUI fails or no GPU lease is granted. `X-Argus-Priority` sets its lease class. Idempotent: a second call returns the stored map without recomputing. A write: refused cross-site and under `READ_ONLY` |
+| `GET /depth/{id}` | the depth map as `image/png`; 404 with the record id when there is none |
+| `GET /archive` | streamed zip of every record, stored image (`images/`) and depth map (`depth/<id>.png`) |
 | `POST /purge` | `{"confirm": "purge"}`; only with `DEVMODE` |
 | `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
+
+### Depth maps
+
+A depth map is derived from an image darkroom already judged and released, with no new prompt and no new imagery, so it
+gets no pre-flight and no scan; the guard for generations is unchanged. The PNG is 8-bit greyscale (`L`) at the image's
+size, near bright (255) and far dark (0), stretched min to max per image (Depth Anything's relative inverse depth), with
+no metadata. It is stored beside the image as `<id>.depth.png`, and removing or purging the image removes it. The
+record's `depth` is `{model: "depth-anything-v2-small", model_license: "Apache-2.0", sha256, width, height, created_at,
+workflow, engine_version}` (`sha256` of the stored PNG), or `null`.
 
 The generate and pre-flight body: `user_prompt`, `negative_prompt`, `expand`, `seed`, `sampling`, `checkpoint`, `vae`,
 `loras` (`{name, weight, trigger_words}`), `enforcing_policy`, `advisory_policies`, `thinking`, `nsfw_threshold`, and
@@ -275,9 +343,13 @@ judged in full either way. It is cut at 128 into a 1-bit PNG with no metadata, s
 input, and never stored. The record keeps `request.init_image.mask` (`sha256` of that PNG, `source_sha256` of the bytes
 sent, `masked_fraction`: the share of the input it repaints, to 4 decimals).
 
-Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`);
-`blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet could not be reached, and the
-image is then blurred. Each LoRA in `params.loras` keeps the `trigger_words` the request supplied.
+Every record under an NSFW policy carries a `guard.nudenet` block (`exposed_score`, `labels`, `threshold`, `blur`,
+`detector`, `detector_model`); `blur` is the only place the blur decision lives. `exposed_score` is `null` when NudeNet
+could not be reached, and the image is then blurred. `detector` is the NudeNet model that scored the image, as its server
+reports it: `640m`, `320n`, or `null` when NudeNet did not answer or its server does not say (the upstream 320n image has
+no `/health`). 640m and 320n score the same image differently, so compare scores, and the `threshold` they were judged
+against, only within one detector. The default threshold, 0.2, was set before the suite's move to one shared 640m server
+(argus-cortex#79) and is re-checked against it there. Each LoRA in `params.loras` keeps the `trigger_words` the request supplied.
 
 ## Demo (no GPU)
 
@@ -318,9 +390,26 @@ The age check is an extra signal on top of SingGuard's minors rule, never a repl
 image for itself, with or without an estimate: rule A of each adult policy covers anyone who appears to be a minor. So
 when the age check is missing, that rule still applies.
 
-The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own: an estimate under 18
-on an image where NudeNet scores an exposed class at 0.2 or more deletes the image (`minor-exposed`). Without exposure
-it is only recorded and shown.
+The estimate is a tool's reading, and it is never sent to SingGuard. It has one effect of its own, the `minor-exposed`
+rule, which deletes the image. Without exposure an estimate is only recorded and shown. `MINOR_EXPOSED` picks how the
+rule places exposure:
+
+- `frame` (the default): any estimate under 18 on an image where NudeNet scores an exposed class at 0.2 or more. Where
+  the exposure is does not matter, so an adult's exposure beside a clothed minor deletes too.
+- `overlap`: argus-curator's original rule. Each exposed NudeNet detection (the five default exposed classes, scored
+  0.2 or more) is placed by its box against the person boxes, or the face boxes when no person was detected. It
+  deletes when it overlaps a box estimated under 18, or overlaps no box at all; one overlapping only adults' boxes does
+  not. It fails closed: a face under 18 whose body was not found makes any exposure count, and so does an exposed score
+  with no exposed detection box to place.
+  Boxes are trusted only from a NudeNet server that names its detector on `/health`; the upstream 320n image does
+  not (and offsets its boxes), so with it the image is judged by `frame`.
+
+Both ignore the user's NudeNet threshold. The record's `age.minor_exposed_rule` says which rule decided, and
+`age.people` keeps every person box with the face it was matched to (`face_index`), and `nudenet.detections` keeps
+NudeNet's boxes (label, score, box; never pixels), so an `overlap` decision can be recomputed from the record. A
+matched person that cannot be placed (a malformed box, an unknown face) is dropped from `people`, which under
+`overlap` fails closed. `/health` reports the rule as `minor_exposed`.
+A record written before the setting existed has none of these fields and was decided by `frame`.
 
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,

@@ -7,6 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-19
+
+### Added
+
+- **`sdxl+lora2+inpaint.json`**: SDXL inpainting with two LoRAs, for argus-mint's teaser renders (an identity LoRA
+  plus a project style LoRA, smk762/argus-mint#47). It is `sdxl+lora1+inpaint` with the second `LoraLoader`
+  (`$lora_2` / `$lora_2_weight`) chained after the first, as `sdxl+lora2` chains it. `/models` now lists
+  `inpaint_lora_counts` `[0, 1, 2]` for SDXL checkpoints; a two-LoRA mask run was a 400 before. A deployment with its
+  own `WORKFLOW` directory must copy the file in.
+- `/health` reports `demo`: true only for `make demo` (`demo/run.py`, fake backends), never set from the environment.
+  A client test that generates (safelight's workflow contract test) refuses any server that does not say it is the
+  demo, so it never renders on a GPU (smk762/argus-safelight#58).
+- `scripts/nudenet_compare.py` (#54), run by hand: scores darkroom's stored images (`--records`) and/or a hand-sorted
+  `blur/`/`clear/` folder (`--labelled`) on an old and a new NudeNet server, and sweeps the new one's cutoff against
+  the old 0.2 (`EXPOSED_FLOOR`, `DEFAULT_NSFW_THRESHOLD`). Reports names and scores, never image bytes.
+
+- **The NudeNet detector is recorded with its score** (#54). `guard.nudenet` gains `detector` (`640m`, `320n`, or
+  `null`) and `detector_model` (the weights file the server named), from cortex's `NudeNetClient.info()`, asked after
+  each successful score, for outputs and input images alike. 640m and 320n score the same image differently, so
+  records from before and after the suite's move to one shared 640m server (argus-cortex#79) can be told apart.
+  Metadata only: a server that does not say, or whose `/health` fails, scores and decides exactly as before.
+  `record_version` stays 1.0 and the wire schema is regenerated. `/health` gains `nudenet_detector`.
+
+- **GPU leases from argus-iris** (#53). Each render and depth map holds a lease on `comfyui` and each prompt expansion
+  one on `ollama:<model>`, through argus-cortex's coordinator (`ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_BROKER_URL`,
+  `ARGUS_GPU_BROKER_TOKEN`, `ARGUS_GPU_TENANT_MANIFEST`, `ARGUS_GPU_BROKER_FALLBACK`; unset gates nothing, as before).
+  The work goes to the URL a grant names, else darkroom's own. The priority class comes from the caller's
+  `X-Argus-Priority` (`interactive` by default; mint's sample runs send `batch`), or `generate --priority`.
+- With the broker, up to 8 generations and depth runs are in flight at once, each waiting for its lease, so a second
+  generation queues behind iris instead of getting a 409. Without it, one at a time as before. A purge still waits
+  for none to run.
+- `gpu-tenant.yaml`, validated by cortex's `TenantManifest`: kinds `generate` and `depth` on `comfyui`, `expand` on
+  Ollama. The image ships it at `/app/gpu-tenant.yaml`, compose's default manifest path.
+- `/health` gains `gpu` (`coordinator`, `in_flight`, `limit`).
+- A refused lease, one not granted in time, or a broker error is a `failed` record that says so. Nothing retries it as
+  an OOM.
+
+- **Depth maps** (for argus-mask's plate backdrops). `POST /depth/{id}` makes a depth map of a record's stored image
+  with Depth Anything V2 Small (Apache-2.0) and returns the record's new `depth`; `GET /depth/{id}` serves it as an
+  8-bit greyscale PNG at the image's size, near bright and far dark, min to max, no metadata. Idempotent; shares the
+  generation lock (409 while one runs); 404 for no such record, 409 when the record has no stored image, 502 when
+  ComfyUI fails. A write, so cross-site and read-only refuse it. No pre-flight or scan: the image was already judged
+  and released, and nothing new goes in.
+- The record gains an optional `depth` (`model`, `model_license`, `sha256`, `width`, `height`, `created_at`, `workflow`,
+  `engine_version`); `record_version` stays 1.0 and the wire schema is regenerated. The PNG is kept as
+  `<id>.depth.png` beside the image, is in `/archive` as `depth/<id>.png`, and goes when the image is removed
+  (`DELETE /record/{id}`, `depth` back to `null`) or purged.
+- `comfyui/darkroom_depth.py` (`DarkroomDepthAnything`), a vendored ComfyUI node: copy it into `custom_nodes/` and
+  download the model once into `models/depth/Depth-Anything-V2-Small-hf`. It loads only the Small model, from that
+  local folder, and refuses Base and Large (CC-BY-NC-4.0). The depth graph is built into the package, never a
+  generation template.
+
+- `ARGUS_DARKROOM_MINOR_EXPOSED` picks how the `minor-exposed` rule places exposure: `frame` (the default, unchanged:
+  any age estimate under 18 plus a NudeNet exposed score of 0.2 or more) or `overlap` (argus-curator's original rule:
+  an exposed NudeNet detection deletes when its box overlaps a person, else face, box estimated under 18, or no box at
+  all, and fails closed when a young face has no body or the exposure has no box). Any other value refuses to start.
+  `/health` reports it as `minor_exposed`.
+- The record's `guard.age` (and `guard.input.age`) gains `people`, every person box with its estimate and the face it
+  was matched to, and `minor_exposed_rule`. Both are optional: older records load as `[]` and `"frame"`.
+  `guard.nudenet` (and `guard.input.nudenet`) gains `detections`: every NudeNet detection's label, score and box
+  (never pixels), so an `overlap` decision can be recomputed from the record. Older records load as `[]`.
+  `record_version` stays 1.0; the wire schema is regenerated.
+- The age estimators keep curator's matched person boxes (`HttpAgeEstimator.read`, `CuratorAgeEstimator.read`).
+  `estimate` still returns the faces alone.
+
+### Changed
+
+- argus-cortex `>=0.7,<0.8` for `NudeNetClient.info()`, and argus-curator `>=0.17,<0.18`, the first curator on
+  cortex 0.7 (#54).
+- argus-cortex `>=0.6,<0.7`, with the `[remote]` (broker client) and `[yaml]` (manifest) extras.
+- argus-curator `>=0.16,<0.17` for the `[age]` extra and the tests: 0.16 is the first curator on cortex 0.6
+  (argus-curator#157). Curator 0.15 and later carry more face measurements; darkroom reads only the age estimates and
+  boxes, so nothing else changes.
+- Record ids and workflow placeholder and file names are checked with `fullmatch` (argus-cortex's `fullmatch`
+  codemod, ai-code-auditor#56), so they match the whole string: `$` also matches before a final newline, so an id
+  followed by `\n` used to pass `valid_id`.
+
+### Fixed
+
+- The spec said darkroom applied curator's `minor_exposed` rule; it applied the whole-frame rule. It now describes
+  both rules and the default.
+- `overlap` places exposure only by the boxes of a NudeNet detector that names itself on `/health`. With one that does
+  not (the upstream 320n image, whose boxes are offset by its letterbox padding), the image is judged by `frame`, and
+  `minor_exposed_rule` says so.
+- A depth run that finds the gate full says "a generation or depth map is already running", not that a generation is.
+  `POST /depth/{id}` reads the stored image off the event loop.
+- A LoRA trigger word that starts or ends with a symbol (`<sks>`) is found beside a word and not appended twice.
+
 ## [0.2.0] - 2026-11-14
 
 ### Added

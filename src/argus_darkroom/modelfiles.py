@@ -58,13 +58,17 @@ class ModelLibrary:
         """The model names found for *kind*, sorted. Empty when the folder is missing.
 
         A diffusers folder (one holding ``model_index.json``) is skipped: its files are the parts of a model, and
-        none of them loads alone.
+        none of them loads alone. So is a symlink to a file outside the folder: :meth:`path` refuses it, and a name
+        listed here must be one that can be used.
         """
         folder = self._dir(kind)
         if not folder.is_dir():
             return []
+        resolved = folder.resolve()
         files = [p for p in folder.rglob("*") if p.is_file()]
         diffusers = {p.parent for p in files if p.name == "model_index.json"}
         return sorted(
-            p.relative_to(folder).as_posix() for p in files if p.suffix in SUFFIXES and diffusers.isdisjoint(p.parents)
+            p.relative_to(folder).as_posix()
+            for p in files
+            if p.suffix in SUFFIXES and diffusers.isdisjoint(p.parents) and resolved in p.resolve().parents
         )

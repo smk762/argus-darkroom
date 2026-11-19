@@ -112,3 +112,25 @@ def test_load_mask_returns_a_batch_of_one() -> None:
     torch = pytest.importorskip("torch")
     (mask,) = load_node().DarkroomLoadMaskBase64().load(mask_png())
     assert isinstance(mask, torch.Tensor) and tuple(mask.shape) == (1, 2, 3) and mask.dtype == torch.float32
+
+
+def test_decode_turns_an_image_upright_by_its_exif_orientation() -> None:
+    # Drawn 3 wide and 2 high, tagged "rotate 90 CW to display" (orientation 6), as a phone stores a portrait shot.
+    image = Image.new("RGB", (3, 2), (0, 0, 0))
+    image.putpixel((0, 0), (255, 255, 255))
+    exif = Image.Exif()
+    exif[0x0112] = 6
+    buf = io.BytesIO()
+    image.save(buf, "PNG", exif=exif)
+    out = load_node().decode(base64.b64encode(buf.getvalue()).decode())
+    assert out.shape == (3, 2, 3)  # 2 wide, 3 high: as the user sees it
+    assert out[0, -1].tolist() == [1.0, 1.0, 1.0]  # the top-left corner, turned to the top right
+
+
+def test_decode_mask_scales_a_16_bit_mask_rather_than_clipping_it() -> None:
+    grey = np.array([[0, 32768, 65535]], dtype=np.uint16)
+    buf = io.BytesIO()
+    Image.fromarray(grey).save(buf, "PNG")
+    out = load_node().decode_mask(base64.b64encode(buf.getvalue()).decode())
+    assert out.shape == (1, 3)
+    assert out[0, 0] == 0.0 and abs(out[0, 1] - 0.5) < 0.01 and out[0, 2] == 1.0

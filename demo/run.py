@@ -208,6 +208,7 @@ def main() -> None:
             policy="default",
             allow_nsfw=True,
             devmode=True,
+            demo=True,
             cors_origins=tuple(args.cors_origin or DEFAULT_ORIGINS),
             output_root=args.data / "records",
             models_root=models,

@@ -131,7 +131,9 @@ def test_the_sampling_options_have_no_invented_defaults() -> None:
 @pytest.mark.parametrize(
     ("args", "message"),
     [
-        (["--lora", "a:heavy"], "weight"),
+        (["--lora", "a:nan"], "finite"),
+        (["--lora", "a:inf"], "finite"),
+        (["--lora", "a:-inf"], "finite"),
         (["--lora", "a", "--trigger", "b=word"], "not one of the --lora"),
         (["--trigger", "word"], "NAME=words"),
     ],
@@ -139,6 +141,23 @@ def test_the_sampling_options_have_no_invented_defaults() -> None:
 def test_lora_and_trigger_options_are_checked(args, message) -> None:
     result = gen(*args)
     assert result.exit_code == 2 and message in plain(result.output)
+
+
+@pytest.mark.parametrize(
+    ("spec", "name", "weight"),
+    [
+        ("style.safetensors", "style.safetensors", 1.0),
+        ("style.safetensors:0.6", "style.safetensors", 0.6),
+        ("civitai:12345", "civitai", 12345.0),  # a number after the colon is a weight: say civitai:12345:1
+        ("civitai:12345:1", "civitai:12345", 1.0),
+        ("sub:dir/style.safetensors", "sub:dir/style.safetensors", 1.0),
+        (r"C:\loras\style.safetensors", r"C:\loras\style.safetensors", 1.0),
+        (r"C:\loras\style.safetensors:0.8", r"C:\loras\style.safetensors", 0.8),
+    ],
+)
+def test_a_lora_name_may_hold_a_colon(spec, name, weight) -> None:
+    (lora,) = cli._parse_loras([spec], [])
+    assert (lora.name, lora.weight) == (name, weight)
 
 
 def test_serve_refuses_to_start_without_singguard(monkeypatch) -> None:

@@ -14,6 +14,22 @@
           "title": "Minor Exposed",
           "type": "boolean"
         },
+        "minor_exposed_rule": {
+          "default": "frame",
+          "enum": [
+            "frame",
+            "overlap"
+          ],
+          "title": "Minor Exposed Rule",
+          "type": "string"
+        },
+        "people": {
+          "items": {
+            "$ref": "#/$defs/PersonAge"
+          },
+          "title": "People",
+          "type": "array"
+        },
         "source": {
           "const": "mivolo",
           "default": "mivolo",
@@ -65,6 +81,66 @@
         "state"
       ],
       "title": "Cell",
+      "type": "object"
+    },
+    "DepthRecord": {
+      "description": "A depth map derived from the record's stored image (``POST /depth/{id}``), never from a new prompt.\n\nThe PNG is 8-bit greyscale at the image's size, near bright (255) and far dark (0), stretched min to max per image,\nwith no metadata. ``sha256`` is of the stored PNG's bytes. ``workflow`` names darkroom's built-in depth graph.",
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "engine_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine Version"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "model_license": {
+          "title": "Model License",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        },
+        "workflow": {
+          "title": "Workflow",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "model_license",
+        "sha256",
+        "width",
+        "height",
+        "workflow"
+      ],
+      "title": "DepthRecord",
       "type": "object"
     },
     "Expansion": {
@@ -138,6 +214,17 @@
         "darkroom_version": {
           "title": "Darkroom Version",
           "type": "string"
+        },
+        "depth": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DepthRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "guard": {
           "$ref": "#/$defs/GuardRecord"
@@ -587,12 +674,83 @@
       "title": "ModelRef",
       "type": "object"
     },
+    "NudeNetBox": {
+      "description": "One NudeNet detection: a class, its score and where it is. A box, never pixels.",
+      "properties": {
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "score": {
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "score",
+        "bbox"
+      ],
+      "title": "NudeNetBox",
+      "type": "object"
+    },
     "NudeNetRecord": {
       "description": "What NudeNet said, kept for every rendered image. *exposed_score* is null when it did not answer (or is not\nconfigured), and the labels are then empty: under an NSFW policy that blurs the image, under SFW it omits it.",
       "properties": {
         "blur": {
           "title": "Blur",
           "type": "boolean"
+        },
+        "detections": {
+          "items": {
+            "$ref": "#/$defs/NudeNetBox"
+          },
+          "title": "Detections",
+          "type": "array"
+        },
+        "detector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detector"
+        },
+        "detector_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detector Model"
         },
         "exposed_score": {
           "anyOf": [
@@ -623,6 +781,60 @@
         "blur"
       ],
       "title": "NudeNetRecord",
+      "type": "object"
+    },
+    "PersonAge": {
+      "description": "One person (body) box from curator's person detector, with its MiVOLO estimate when it has one.\n\n``face_index`` is the face in :attr:`AgeRecord.faces` this person was matched to, or ``None`` for a body with\nno face. A matched person's estimate may be ``None``: the face carries it. An unmatched person's estimate is\nalso in :attr:`AgeRecord.faces`, so ``faces`` alone still holds every estimate.",
+      "properties": {
+        "age_estimate_years": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Estimate Years"
+        },
+        "bbox": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Bbox",
+          "type": "array"
+        },
+        "face_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Face Index"
+        }
+      },
+      "required": [
+        "bbox"
+      ],
+      "title": "PersonAge",
       "type": "object"
     },
     "RequestRecord": {
