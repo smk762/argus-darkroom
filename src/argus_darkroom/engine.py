@@ -543,6 +543,10 @@ class Engine:
         exposed = scan.nsfw.exposed_score if scan.nsfw is not None else None
         detections = scan.nsfw.detections if scan.nsfw is not None else []
         rule = self.settings.minor_exposed
+        if rule == "overlap" and (scan.nudenet_info is None or scan.nudenet_info.detector is None):
+            # Boxes from a detector that did not name itself cannot be placed: the upstream 320n image (no /health)
+            # offsets y by its letterbox padding, which could move exposure off a young person's box. Unsure: frame.
+            rule = "frame"
         age = scan.age.model_copy(deep=True) if scan.age is not None else None
         if age is not None:
             age.minor_exposed_rule = rule

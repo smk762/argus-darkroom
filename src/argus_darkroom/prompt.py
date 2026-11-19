@@ -29,7 +29,12 @@ def assemble_prompt(user_prompt: str, expanded_prompt: str | None = None, trigge
 
 def _has_phrase(text: str, phrase: str) -> bool:
     """Whether *phrase* is in *text* with no word character either side of it, ignoring case."""
-    return re.search(rf"(?<!\w){re.escape(phrase.casefold())}(?!\w)", text.casefold()) is not None
+    folded = phrase.casefold()
+    # The edges are checked only where the phrase itself starts or ends with a word character: ``<sks>`` in ``a<sks>``
+    # is present.
+    before = r"(?<!\w)" if re.match(r"\w", folded) else ""
+    after = r"(?!\w)" if re.search(r"\w\Z", folded) else ""
+    return re.search(before + re.escape(folded) + after, text.casefold()) is not None
 
 
 def _one_line(text: str) -> str:

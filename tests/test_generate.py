@@ -405,6 +405,20 @@ def test_overlap_deletes_exposure_on_the_young_persons_box(rig) -> None:
     assert_no_bytes(rig, record, before)
 
 
+def test_overlap_falls_back_to_frame_when_the_detector_does_not_name_itself(rig) -> None:
+    # The upstream 320n image has no /health and offsets its boxes: they cannot place exposure, so frame decides.
+    rig.settings = Settings(**{**rig.settings.__dict__, "minor_exposed": "overlap"})
+    nsfw(rig)
+    rig.nudenet.labels = EXPOSED
+    rig.nudenet.model = None
+    before = rig.files()
+    with faces_beside_an_adult() as fake:
+        record = rig.generate(rig.engine(age=HttpAgeEstimator(fake.url)))
+    assert (record.outcome, record.outcome_reason, record.critical) == ("deleted", "minor-exposed", True)
+    assert record.guard.nudenet.detector is None and record.guard.age.minor_exposed_rule == "frame"
+    assert_no_bytes(rig, record, before)
+
+
 @pytest.mark.parametrize(
     "estimator", [None, FakeAge(error=AgeUnavailable("no weights")), FakeAge(error=RuntimeError("boom"))]
 )

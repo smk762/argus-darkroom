@@ -401,6 +401,8 @@ rule places exposure:
   deletes when it overlaps a box estimated under 18, or overlaps no box at all; one overlapping only adults' boxes does
   not. It fails closed: a face under 18 whose body was not found makes any exposure count, and so does an exposed score
   with no exposed detection box to place.
+  Boxes are trusted only from a NudeNet server that names its detector on `/health`; the upstream 320n image does
+  not (and offsets its boxes), so with it the image is judged by `frame`.
 
 Both ignore the user's NudeNet threshold. The record's `age.minor_exposed_rule` says which rule decided, and
 `age.people` keeps every person box with the face it was matched to (`face_index`), and `nudenet.detections` keeps

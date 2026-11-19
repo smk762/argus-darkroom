@@ -88,6 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The spec said darkroom applied curator's `minor_exposed` rule; it applied the whole-frame rule. It now describes
   both rules and the default.
+- `overlap` places exposure only by the boxes of a NudeNet detector that names itself on `/health`. With one that does
+  not (the upstream 320n image, whose boxes are offset by its letterbox padding), the image is judged by `frame`, and
+  `minor_exposed_rule` says so.
+- A depth run that finds the gate full says "a generation or depth map is already running", not that a generation is.
+  `POST /depth/{id}` reads the stored image off the event loop.
+- A LoRA trigger word that starts or ends with a symbol (`<sks>`) is found beside a word and not appended twice.
 
 ## [0.2.0] - 2026-11-14
 

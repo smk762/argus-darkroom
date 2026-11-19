@@ -41,8 +41,9 @@ def _parse_loras(specs: list[str], triggers: list[str]) -> list[LoRASpec]:
     """``NAME`` or ``NAME:WEIGHT`` per ``--lora``. Trigger words belong to the first LoRA unless there are
     several, in which case each ``--trigger`` is ``NAME=word`` (or ``NAME=word,word``).
 
-    Only a number after the last ``:`` is a weight, so a name with a colon in it (``civitai:12345``) is a name.
-    A weight must be finite."""
+    Only a number after the last ``:`` is a weight, so a name with a colon in it (``sub:dir/style``) is a name.
+    A name ending in ``:<number>`` needs an explicit weight: ``civitai:12345`` is ``civitai`` at 12345, so say
+    ``civitai:12345:1``. A weight must be finite."""
     loras: list[LoRASpec] = []
     for spec in specs:
         name, sep, suffix = spec.rpartition(":")

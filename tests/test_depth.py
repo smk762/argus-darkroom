@@ -139,7 +139,7 @@ def test_a_depth_run_during_a_generation_is_a_409(rig) -> None:
     c.app.state.busy.acquire()
     try:
         r = c.post(f"/depth/{record['id']}")
-        assert r.status_code == 409 and r.json()["detail"] == "a generation is already running"
+        assert r.status_code == 409 and r.json()["detail"] == "a generation or depth map is already running"
     finally:
         c.app.state.busy.release()
     assert depth_runs(rig) == 0

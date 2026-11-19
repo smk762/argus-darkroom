@@ -235,8 +235,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
 
     def busy_detail() -> str:
         if busy.limit == 1:
-            return "a generation is already running"
-        return f"{busy.limit} generations are already queued or running"
+            return "a generation or depth map is already running"
+        return f"{busy.limit} generations or depth maps are already queued or running"
 
     def record_or_404(record_id: str) -> GenerationRecord:
         record = engine.store.load(record_id) if valid_id(record_id) else None
@@ -464,7 +464,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         found = record_or_404(record_id)
         if found.depth is not None and engine.store.depth_path(record_id).is_file():
             return found.depth  # already made: never recomputed
-        image = stored_image(found)
+        image = await run_in_threadpool(stored_image, found)  # a file read: off the event loop
         if not busy.enter():
             raise HTTPException(409, busy_detail())
 

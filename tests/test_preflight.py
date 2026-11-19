@@ -44,6 +44,11 @@ def test_a_trigger_differing_only_in_case_is_appended_once() -> None:
     assert assemble_prompt("a cat", None, ["Foo", "foo", "FOO"]) == "a cat, Foo"
 
 
+def test_a_trigger_that_starts_with_a_symbol_is_present_beside_a_word() -> None:
+    # Only a word-character edge needs a boundary: "<sks>" after "x" is still "<sks>".
+    assert assemble_prompt("a cat", None, ["x<sks>", "<sks>"]) == "a cat, x<sks>"
+
+
 def test_frame_labels_the_negative_prompt() -> None:
     text = frame("a portrait", "child, minor, underage")
     assert text == (
