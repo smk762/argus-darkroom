@@ -15,6 +15,7 @@ from argus_darkroom.engine import Engine
 from argus_darkroom.guard import Guard
 from argus_darkroom.hashing import sha256_cached
 from argus_darkroom.models import SamplingParams
+from argus_darkroom.prompt import frame
 from argus_darkroom.request import GenerateRequest, RequestError
 from argus_darkroom.workflow import WorkflowError, WorkflowSet, parse_workflow
 
@@ -86,7 +87,7 @@ def test_render_returns_the_image_in_memory_and_a_record_that_reproduces_it(comf
     assert rec.engine == "comfyui" and rec.engine_version == "0.3.test"
 
 
-def test_comfyui_receives_exactly_the_prompt_that_was_checked(comfyui, tmp_path, models) -> None:
+def test_render_builds_the_prompt_preflight_builds(comfyui, tmp_path, models) -> None:
     eng = make(comfyui, tmp_path, models)
     req = request(user_prompt="a cat")
     out = eng.render(req, expanded_prompt="a cat on a rug")
@@ -94,6 +95,32 @@ def test_comfyui_receives_exactly_the_prompt_that_was_checked(comfyui, tmp_path,
     assert graph["6"]["inputs"]["text"] == eng.final_prompt(req, "a cat on a rug") == out.request.final_prompt
     assert out.request.expanded_prompt == "a cat on a rug"
     assert graph["7"]["inputs"]["text"] == "blurry"
+
+
+class RecordingGuard(Guard):
+    """The real guard, noting each text it judged and how many graphs ComfyUI had been sent by then."""
+
+    def __init__(self, url: str, comfyui: FakeComfyUI) -> None:
+        super().__init__(url)
+        self.fake, self.text_checks = comfyui, []
+
+    def check_text(self, policy: str, text: str, thinking: str | None = None):  # noqa: ANN201
+        self.text_checks.append((policy, text, len(self.fake.graphs)))
+        return super().check_text(policy, text, thinking)
+
+
+def test_comfyui_receives_exactly_the_prompt_that_was_checked(rig) -> None:
+    """Watch the guard itself: the text it judged is built from the very strings ComfyUI is sent,
+    once, before anything is submitted. A render that checked one prompt and sent another fails here."""
+    guard = RecordingGuard(rig.settings.singguard_url, rig.comfyui)
+    eng = Engine(rig.settings, guard=guard, comfyui=ComfyUIClient(rig.comfyui.url, ws_url=rig.comfyui.ws_url))
+    record = rig.generate(eng, user_prompt="a cat", negative_prompt="blurry")
+    assert record.outcome == "passed"
+    assert len(rig.comfyui.graphs) == 1
+    graph = rig.comfyui.graphs[0]
+    sent_prompt, sent_negative = graph["6"]["inputs"]["text"], graph["7"]["inputs"]["text"]
+    assert (sent_prompt, sent_negative) == ("a cat, sks", "blurry")
+    assert guard.text_checks == [(eng.policies(rig.request())[0], frame(sent_prompt, sent_negative), 0)]
 
 
 def test_replaying_a_records_parameters_sends_the_same_graph(comfyui, tmp_path, models) -> None:
