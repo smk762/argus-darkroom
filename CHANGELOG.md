@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Record ids are checked by argus-cortex's `fs.safe_name` (ai-code-auditor#60), with darkroom's own pattern (32
+  lowercase hex characters) in place of its default, so the check is exactly as strict as before. argus-cortex is
+  pinned `>=0.8,<0.9` (was `>=0.7,<0.8`; 0.8 is the first with `fs`), and argus-curator, in the `age` and `dev`
+  extras, `>=0.18,<0.19`, the curator release on cortex 0.8.
+
 ## [0.3.0] - 2026-11-19
 
 ### Added

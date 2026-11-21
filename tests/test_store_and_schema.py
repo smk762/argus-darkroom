@@ -148,3 +148,16 @@ def test_a_write_reaches_the_disk_before_its_rename(tmp_path, monkeypatch) -> No
     store.write_image(new_id(), b"png")
     # The file's bytes, then the rename, then the directory entry.
     assert events == ["fsync", "replace", "fsync"]
+
+
+def test_a_record_id_stays_stricter_than_cortexs_default_safe_name() -> None:
+    # valid_id goes through argus-cortex's safe_name with the record-id pattern, so names its default would take
+    # (capitals, ".", "_", "-", any length up to 128) are still refused.
+    from argus_cortex.fs import safe_name
+
+    record_id = new_id()
+    for name in (record_id.upper(), record_id[:-1] + ".", record_id + "0", record_id[:31], "my-record_1.json"):
+        assert safe_name(name) == name
+        assert not valid_id(name)
+    for name in ("", ".", "..", record_id + "\n"):
+        assert not valid_id(name)
