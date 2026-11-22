@@ -156,6 +156,7 @@ class FakeFaces:
         people: list[dict] | None = None,
         people_check: str | None = None,
         people_error: str | None = None,
+        omit_people: bool = False,
         health: dict | bytes | None = None,
         status: int = 200,
         health_status: int = 200,
@@ -164,6 +165,7 @@ class FakeFaces:
         self.people = people
         self.people_check = people_check
         self.people_error = people_error
+        self.omit_people = omit_people  # send people_check without a people list (a malformed curator answer)
         self.health = health if health is not None else {"status": "ok", "faces": True, "mivolo": True}
         self.status = status
         self.health_status = health_status
@@ -186,7 +188,8 @@ class FakeFaces:
                 fake.posts.append(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 payload: dict = {"source": "mivolo", "faces": fake.faces}
                 if fake.people is not None or fake.people_check is not None:
-                    payload["people"] = fake.people or []
+                    if not fake.omit_people:
+                        payload["people"] = fake.people or []
                     payload["people_check"] = fake.people_check
                     payload["people_error"] = fake.people_error
                 data = json.dumps(payload).encode()
