@@ -175,7 +175,11 @@ class FakeComfyUI:
                     self._send(200, {})
                 elif self.path == "/interrupt":
                     fake.interrupts.append(body)
-                    fake.queued = [pid for pid in fake.queued if pid != body.get("prompt_id")]
+                    # As in ComfyUI, /interrupt stops only the running prompt (named or not): a pending one stays
+                    # queued and runs later, so a client that only interrupts a queued prompt leaks it.
+                    running = fake.queued[:1] if fake.busy_with is None else []
+                    if running and body.get("prompt_id") in (None, running[0]):
+                        fake.queued = fake.queued[1:]
                     self._send(200, {})
                 else:
                     self._send(404, {})

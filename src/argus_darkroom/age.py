@@ -209,6 +209,9 @@ def _reading_from_payload(payload: object) -> AgeRecord:
     faces = [_face_from_item(item, "face") for item in payload["faces"]]
     n_faces = len(faces)
     if people is None:
+        if check == "ok":
+            # The body pass ran but its results are missing: that is not "none found".
+            raise AgeUnavailable("people check ok but no people list")
         return AgeRecord(faces=faces)
     if not isinstance(people, list):
         raise AgeUnavailable("age check returned a malformed people list")

@@ -202,6 +202,17 @@ def test_a_people_list_without_an_ok_check_is_not_none_found() -> None:
         assert HttpAgeEstimator(fake.url).read(b"x").people == []
 
 
+def test_an_ok_people_check_without_a_people_list_is_unavailable() -> None:
+    # The body pass ran but its results are missing: a faceless minor could be among them.
+    with (
+        FakeFaces(
+            faces=[{"age_estimate_years": 34.2, "bbox": [1, 2, 3, 4]}], people_check="ok", omit_people=True
+        ) as fake,
+        pytest.raises(AgeUnavailable, match="no people list"),
+    ):
+        HttpAgeEstimator(fake.url).read(b"x")
+
+
 def test_an_age_too_large_for_a_float_is_no_estimate() -> None:
     face = {"age_estimate_years": 10**400, "bbox": [1, 2, 3, 4]}
     with FakeFaces(faces=[face]) as fake, pytest.raises(AgeUnavailable, match="without an estimate"):

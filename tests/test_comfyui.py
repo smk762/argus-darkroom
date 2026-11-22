@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import urllib.request
+
 import pytest
 from fake_comfyui import IMAGE_HEADER, PREVIEW_HEADER, FakeComfyUI, event, grey_png
 
@@ -91,6 +94,31 @@ def test_a_timeout_while_another_clients_job_runs_does_not_interrupt_it() -> Non
         assert len(fake.interrupted) == 1  # ours dropped from the queue
         assert fake.interrupts == []
         assert fake.history == {}
+
+
+def test_the_fake_interrupts_only_the_running_prompt_as_comfyui_does() -> None:
+    # A pending prompt survives /interrupt in ComfyUI: only /queue {delete} drops it. A client that only
+    # interrupted a queued prompt would leak a generation, and the fake must let a test see that.
+    def interrupt(fake: FakeComfyUI, body: dict) -> None:
+        req = urllib.request.Request(
+            fake.url + "/interrupt",
+            data=json.dumps(body).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5).close()
+
+    with FakeComfyUI() as fake:
+        fake.busy_with, fake.queued = "someone-else", ["ours"]
+        interrupt(fake, {"prompt_id": "ours"})
+        assert fake.queued == ["ours"]  # pending behind another client's run: still queued
+        fake.busy_with, fake.queued = None, ["ours", "next"]
+        interrupt(fake, {"prompt_id": "next"})
+        assert fake.queued == ["ours", "next"]  # pending behind our running one: still queued
+        interrupt(fake, {"prompt_id": "ours"})
+        assert fake.queued == ["next"]
+        interrupt(fake, {})
+        assert fake.queued == []  # a bare /interrupt stops whatever runs
 
 
 def test_a_dropped_websocket_stops_the_prompt_it_can_no_longer_hear() -> None:
