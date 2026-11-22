@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     # [server] is for env_flag, which the config reads even without the HTTP server. [remote] is the GPU broker client
     # (argus-iris) and [yaml] reads gpu-tenant.yaml; both are used only with ARGUS_GPU_COORDINATOR=broker.
-    "argus-cortex[images,server,remote,yaml]>=0.8,<0.9",
+    "argus-cortex[images,server,remote,yaml]>=0.14,<0.15",
     "pydantic>=2.7",
     # ComfyUI returns the image over its websocket; stdlib has no client
     "websockets>=15",
