@@ -14,9 +14,14 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
+from argus_cortex.fs import PathRefused, safe_name
+
 from argus_darkroom.models import GenerationRecord, Outcome
 
-_ID = re.compile(r"^[0-9a-f]{32}$")
+# A record id is a uuid4 hex. argus-cortex's safe_name checks it as one path segment (whole string, never "." or
+# ".."), with this pattern in place of its default: the default also takes capitals, ".", "_" and "-", and any
+# length up to 128, none of which a record id has.
+_ID = re.compile(r"[0-9a-f]{32}")
 DEPTH_SUFFIX = ".depth.png"
 
 
@@ -25,7 +30,11 @@ def new_id() -> str:
 
 
 def valid_id(record_id: str) -> bool:
-    return bool(_ID.fullmatch(record_id))
+    try:
+        safe_name(record_id, pattern=_ID, label="record id")
+    except PathRefused:
+        return False
+    return True
 
 
 def _fsync_dir(directory: Path) -> None:
