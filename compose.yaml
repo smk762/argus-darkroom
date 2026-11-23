@@ -26,15 +26,13 @@ services:
       ARGUS_DARKROOM_DEVMODE: ${DEVMODE:-0}
       ARGUS_DARKROOM_READ_ONLY: ${READ_ONLY:-0}
       ARGUS_DARKROOM_CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
-      # GPU leases (gpu-tenant.yaml). Unset is no gating. With broker, argus-iris queues each render and expansion and
-      # may name the node to send it to; the fallback is used while iris is down. In this container `lease` orders
-      # darkroom's own runs only: no lock directory is shared with the host.
-      ARGUS_GPU_COORDINATOR: ${ARGUS_GPU_COORDINATOR:-none}
+      # GPU leases. Unset is no gating. With a broker URL, darkroom registers /app/gpu-tenant.yaml with argus-iris at
+      # startup, and iris queues each render and expansion and may name the node to send it to; the fallback is used
+      # while iris is down. In this container `lease` orders darkroom's own runs only: no lock directory is shared
+      # with the host.
       ARGUS_GPU_BROKER_URL: ${ARGUS_GPU_BROKER_URL:-}
       ARGUS_GPU_BROKER_TOKEN: ${ARGUS_GPU_BROKER_TOKEN:-}
       ARGUS_GPU_BROKER_FALLBACK: ${ARGUS_GPU_BROKER_FALLBACK:-lease}
-      ARGUS_GPU_TENANT_MANIFEST: ${ARGUS_GPU_TENANT_MANIFEST:-/app/gpu-tenant.yaml}
-      ARGUS_GPU_TENANT: ${ARGUS_GPU_TENANT:-}
       ARGUS_GPU_LEASE_TIMEOUT_S: ${ARGUS_GPU_LEASE_TIMEOUT_S:-}
     volumes:
       - darkroom-data:/data

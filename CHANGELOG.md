@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are all the GPU broker needs** (argus-cortex 0.15,
+  argus-cortex#204, argus-iris#47). The URL alone selects argus-iris; the tenant and kind defaults come from
+  `gpu-tenant.yaml`, which the image ships at `/app/gpu-tenant.yaml`, where cortex looks for it.
+  `ARGUS_GPU_COORDINATOR`, `ARGUS_GPU_TENANT_MANIFEST` and `ARGUS_GPU_TENANT` are gone from compose and
+  `.env.example`; `.env.example` leaves the URL empty, so a copy of it gates nothing. An explicit
+  `ARGUS_GPU_COORDINATOR` still wins.
+- **The server registers with iris at startup** (`argus_cortex.gpu.aregistered` in its lifespan), keeps it
+  registered, and signs off at shutdown, so the broker knows darkroom's kinds before its first lease. It never holds
+  up startup, and does nothing without a broker URL.
+- argus-cortex is pinned `>=0.15,<0.16`, and argus-curator, in the `age` and `dev` extras, `>=0.23,<0.24`: curator
+  0.22 caps cortex below 0.15, so this needs the curator release on cortex 0.15.
 - Record ids are checked by argus-cortex's `fs.safe_name` (ai-code-auditor#60), with darkroom's own pattern (32
   lowercase hex characters) in place of its default, so the check is exactly as strict as before. argus-cortex is
   pinned `>=0.14,<0.15`, and argus-curator, in the `age` and `dev` extras, `>=0.22,<0.23`, the curator

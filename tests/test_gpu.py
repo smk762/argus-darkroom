@@ -349,3 +349,55 @@ def test_a_refusal_from_iris_fails_the_run(rig) -> None:
         record = rig.engine(gpu_coordinator=broker(iris)).generate(rig.request())
         assert record.outcome == "failed" and "refused" in record.outcome_reason
         assert rig.comfyui.graphs == []
+
+
+# --- registration at startup (argus-cortex 0.15) -------------------------------------------------------------
+
+
+def _wait_for(check, timeout_s: float = 5.0) -> bool:
+    for _ in range(int(timeout_s / 0.02)):
+        if check():
+            return True
+        threading.Event().wait(0.02)
+    return check()
+
+
+def test_a_broker_url_and_token_are_all_it_takes(rig, monkeypatch) -> None:
+    """No ARGUS_GPU_COORDINATOR, tenant or manifest path: the URL selects the broker and the manifest is found where the
+    image ships it (here, the working directory)."""
+    monkeypatch.chdir(MANIFEST.parent)
+    monkeypatch.setenv("ARGUS_GPU_BROKER_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("ARGUS_GPU_BROKER_TOKEN", "caller-token")
+    coordinator = gpu.default_coordinator()
+    assert coordinator.name == "broker"
+    assert coordinator.tenant == gpu.TENANT
+    assert coordinator.manifest == load_tenant_manifest(MANIFEST)
+
+
+def test_without_a_broker_url_nothing_is_gated(monkeypatch) -> None:
+    monkeypatch.chdir(MANIFEST.parent)
+    assert gpu.default_coordinator().name == "none"
+
+
+def test_the_server_registers_with_iris_at_startup_and_signs_off_at_shutdown(rig, monkeypatch) -> None:
+    monkeypatch.chdir(MANIFEST.parent)
+    with FakeIris() as iris:
+        monkeypatch.setenv("ARGUS_GPU_BROKER_URL", iris.url)
+        monkeypatch.setenv("ARGUS_GPU_BROKER_TOKEN", "caller-token")
+        with TestClient(create_app(rig.engine())) as c:
+            # Before any work: the broker knows darkroom from its manifest, not from a first lease.
+            assert _wait_for(lambda: iris.tenants)
+            assert iris.leases == []
+            assert c.get("/health").json()["gpu"]["coordinator"] == "broker"
+        [tenant] = iris.tenants
+        assert tenant["tenant"] == "argus-darkroom"
+        assert {r["kind"] for r in tenant["kinds"]} >= {"generate", "depth", "expand"}
+        assert iris.unregistered == ["argus-darkroom"]
+        assert set(iris.auth) == {"Bearer caller-token"}
+
+
+def test_an_unreachable_broker_does_not_stop_the_server_starting(rig, monkeypatch) -> None:
+    monkeypatch.chdir(MANIFEST.parent)
+    monkeypatch.setenv("ARGUS_GPU_BROKER_URL", "http://127.0.0.1:1")
+    with TestClient(create_app(rig.engine())) as c:
+        assert c.get("/health").status_code == 200
