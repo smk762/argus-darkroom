@@ -268,6 +268,7 @@ class FakeIris:
         self.tenants: list[dict] = []
         self.leases: list[dict] = []
         self.releases: list[tuple[str, dict]] = []
+        self.unregistered: list[str] = []
         self.auth: list[str | None] = []
         self._polls: dict[str, int] = {}
         fake = self
@@ -324,6 +325,14 @@ class FakeIris:
                     self._send(200, {})
                 else:
                     self._send(404, {"detail": "Not Found"})
+
+            def do_DELETE(self) -> None:
+                fake.auth.append(self.headers.get("Authorization"))
+                if fake.no_leases or not self.path.startswith("/tenants/"):
+                    self._send(404, {"detail": "Not Found"})
+                    return
+                fake.unregistered.append(self.path.removeprefix("/tenants/"))
+                self._send(200, {})
 
             def log_message(self, *args: object) -> None:
                 pass

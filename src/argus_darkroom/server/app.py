@@ -38,11 +38,12 @@ import threading
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
 import structlog
+from argus_cortex.gpu import aregistered
 from argus_cortex.gpu_wire import PriorityClass
 from argus_cortex.moderation import NudeNetClient
 from argus_cortex.moderation import policies as policy_table
@@ -206,7 +207,18 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     never runs unguarded, so the server does not start."""
     engine = engine or Engine(settings or Settings.from_env())
     cfg = engine.settings
-    app = FastAPI(title="Argus Darkroom", description="Guarded image generation.", version=__version__)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # With the broker, darkroom is a tenant from startup, not from its first lease: the broker gets the manifest's
+        # kind defaults before any work arrives, and a goodbye at shutdown. Never blocks or fails startup; a no-op for
+        # the local coordinators.
+        async with aregistered(engine.gpu):
+            yield
+
+    app = FastAPI(
+        title="Argus Darkroom", description="Guarded image generation.", version=__version__, lifespan=lifespan
+    )
     app.state.engine = engine
     # Entered for the whole of each generation or depth run, taken alone by a purge. One run at a time, unless the GPU
     # broker queues them: then each waits for its own lease and the gate only bounds how many may wait.
@@ -284,7 +296,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             # True only for demo/run.py's fake backends: nothing it "generates" touches a GPU.
             "demo": cfg.demo,
             "generating": busy.locked(),
-            # ARGUS_GPU_COORDINATOR (none, lease or broker); how many runs are in flight, and how many may be.
+            # The coordinator (none, lease or broker); how many runs are in flight, and how many may be.
             "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
         }
 

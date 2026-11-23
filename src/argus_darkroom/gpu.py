@@ -10,8 +10,10 @@ A grant's ``base_url`` is where to send the work; ``None`` means darkroom's own 
 nested, so a local ``flock`` fallback cannot deadlock against itself.
 
 The coordinator comes from the host-wide ``ARGUS_GPU_*`` environment (:func:`argus_cortex.gpu.coordinator_from_env`):
-unset is ``none``, no gating, which is how darkroom ran before. ``broker`` falls back to
-``ARGUS_GPU_BROKER_FALLBACK`` (``lease`` by default) when iris cannot be reached.
+``ARGUS_GPU_BROKER_URL`` (and ``ARGUS_GPU_BROKER_TOKEN``) select the broker, whose tenant and kind defaults come from
+``gpu-tenant.yaml`` (found in the working directory or ``/app``); unset is ``none``, no gating. The broker falls back
+to ``ARGUS_GPU_BROKER_FALLBACK`` (``lease`` by default) when iris cannot be reached. The server registers the manifest
+at startup (:func:`argus_cortex.gpu.aregistered` in its lifespan).
 
 The figures below are the ones declared in ``gpu-tenant.yaml``; ``tests/test_gpu.py`` keeps the two in step. The broker
 uses its learned p95 per kind when that is larger.

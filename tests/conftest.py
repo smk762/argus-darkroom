@@ -17,7 +17,8 @@ from rig import Rig  # noqa: E402
 @pytest.fixture(autouse=True)
 def no_gpu_broker(monkeypatch) -> None:
     """A host's ARGUS_GPU_* must not reach the tests: an engine built without a coordinator gates nothing."""
-    monkeypatch.delenv("ARGUS_GPU_COORDINATOR", raising=False)
+    for name in ("ARGUS_GPU_COORDINATOR", "ARGUS_GPU_BROKER_URL", "ARGUS_GPU_TENANT_MANIFEST", "ARGUS_GPU_TENANT"):
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

@@ -154,7 +154,7 @@ class Engine:
         # ComfyUI on the nodes the GPU broker sent work to, by base URL, so a purge can reach every one of them.
         self._comfyui_at: dict[str, ComfyUIClient] = {}
         self._comfyui_lock = threading.Lock()
-        # ARGUS_GPU_COORDINATOR, host-wide; unset is no gating.
+        # The host-wide ARGUS_GPU_* environment: the broker when ARGUS_GPU_BROKER_URL is set, otherwise no gating.
         self.gpu = gpu_coordinator or gpu.default_coordinator()
         self.models = models or ModelLibrary(settings.models_root)
         # A template that could write before the verdict is refused here, at load, not when it runs.
