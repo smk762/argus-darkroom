@@ -2,7 +2,8 @@
 
 Prefer ``ARGUS_DARKROOM_AGE_URL`` (curator's ``POST /faces?body=true``). The
 image stays in memory; nothing is written. The ``[age]`` extra (curator's
-InsightFace and MiVOLO in this process) is the fallback when no URL is set.
+InsightFace and MiVOLO in this process) is the fallback when no URL is set, and
+the suite-wide ``ARGUS_CURATOR_URL`` the fallback when the extra cannot run.
 
 An estimate is a tool's reading of a face, never a stated age, and is named as
 such everywhere it appears. It is never sent to SingGuard as context.
@@ -66,8 +67,12 @@ _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def remote_age_status(base_url: str) -> AgeStatus:
-    """Whether curator's ``POST /faces`` can run: ``GET /health`` reports ``faces`` or ``mivolo``."""
-    url = base_url.rstrip("/") + "/health"
+    """Whether curator's ``POST /faces`` can run: ``GET /health`` reports ``faces`` or ``mivolo``.
+
+    ``?checks=0`` asks curator (0.24, on cortex's health contract) to skip its own dependency checks: the two fields
+    are there either way, and an older curator ignores the query.
+    """
+    url = base_url.rstrip("/") + "/health?checks=0"
     try:
         with _OPENER.open(url, timeout=PROBE_TIMEOUT) as resp:
             raw = resp.read()
@@ -313,20 +318,30 @@ def age_status() -> AgeStatus:
     return AgeStatus(True)
 
 
-def default_estimator(age_url: str = "") -> tuple[AgeEstimator | None, AgeStatus]:
+def default_estimator(age_url: str = "", fallback_url: str = "") -> tuple[AgeEstimator | None, AgeStatus]:
     """Prefer curator over HTTP; fall back to the in-process extra when no URL is set.
 
     When a URL is set, the HTTP client is always returned. A failed boot probe
     must not disable the check for the process lifetime: ``/health`` re-probes,
     and ``estimate`` maps a down curator to :class:`AgeUnavailable` per image.
+
+    *fallback_url* is the suite-wide curator (``ARGUS_CURATOR_URL``). It is used
+    only when *age_url* is empty and the in-process extra cannot run, so it can
+    turn the check on and never replaces an estimator that works.
     """
     if age_url.strip():
-        status = remote_age_status(age_url)
-        if not status.available:
-            logger.info("age.unavailable", reason=status.reason)
-        return HttpAgeEstimator(age_url), status
+        return _remote_estimator(age_url)
     status = age_status()
+    if status.available:
+        return CuratorAgeEstimator(), status
+    if fallback_url.strip():
+        return _remote_estimator(fallback_url)
+    logger.info("age.unavailable", reason=status.reason)
+    return None, status
+
+
+def _remote_estimator(base_url: str) -> tuple[AgeEstimator, AgeStatus]:
+    status = remote_age_status(base_url)
     if not status.available:
         logger.info("age.unavailable", reason=status.reason)
-        return None, status
-    return CuratorAgeEstimator(), status
+    return HttpAgeEstimator(base_url), status

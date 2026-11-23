@@ -7,7 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**For operators.** Existing configuration keeps working: every variable darkroom read before still wins. What can
+change on a host is listed under "Behaviour changes" below.
+
+### Added
+
+- **Suite-wide backend URLs** (argus-cortex 0.16 `peers`, argus-cortex#209). Each backend is found by darkroom's own
+  variable, then the suite-wide one: `ARGUS_DARKROOM_SINGGUARD_URL` then `ARGUS_SINGGUARD_URL`, and likewise
+  `ARGUS_NUDENET_URL`, `ARGUS_COMFYUI_URL` and `ARGUS_OLLAMA_URL`. Each is read from the environment, then from the
+  suite file (`~/.config/argus/suite.env`, mode 600; `/etc/argus/suite.env` in a container). Compose's `.env` takes
+  either name.
+- **`GET /health` is the suite's `ServiceHealth`** (argus-cortex#212): `service`, `version`, `status`, `started_at`,
+  `wire` (`record_version`), `checks`, `read_only`, `peer`, `build`, `service_version`. Every field it had is still
+  there with the same meaning (`backends`, `age_unavailable`, `minor_exposed`, `policies`, `default_policy`,
+  `thinking`, `nsfw_allowed`, `sfw_available`, `nudenet_detector`, `expansion_enabled`, `workflow_loaded`,
+  `workflows`, `devmode`, `read_only`, `demo`, `generating`, `gpu`), and it still answers 200. `status` is `degraded`
+  when ComfyUI, SingGuard, a configured NudeNet or a configured remote age check does not answer; a configured
+  Ollama is reported and never degrades. Backends are probed on every request, as before. `GET /health?checks=0`
+  probes nothing and repeats what the last full answer found (all false before one).
+- Compose labels for argus-iris's directory: `argus.peer: darkroom`, `argus.service: argus-darkroom`,
+  `argus.health: /health`, `argus.port: "8106"`, and `ARGUS_PEER=darkroom` so `/health` reports it.
+- `compose.suite.yaml`, an opt-in override that mounts the suite file read-only at `/etc/argus/suite.env`
+  (`COMPOSE_FILE=compose.yaml:compose.suite.yaml`). Known limit (argus-cortex#218): the image runs as an unprivileged
+  user, so today the mounted file must be owned by root.
+
+### Behaviour changes
+
+- **A suite-wide URL now reaches darkroom when its own variable is unset or blank.** With `ARGUS_NUDENET_URL` set
+  for the host, a darkroom with no `NUDENET_URL` reaches NudeNet: SFW generation becomes available (gated on it),
+  and NSFW-policy images get their exposure score, blur decision and the minor-exposed rule. With
+  `ARGUS_SINGGUARD_URL` set, darkroom starts without `SINGGUARD_URL`. `ARGUS_COMFYUI_URL` replaces the default
+  ComfyUI, and `ARGUS_OLLAMA_URL` with `OLLAMA_MODEL` set turns prompt expansion on.
+- **The age check falls back to the suite-wide curator** (`ARGUS_CURATOR_URL`) only when `AGE_URL` is empty and the
+  in-process `[age]` extra cannot run. It can turn the age check on where there was none; it never replaces
+  `AGE_URL` or a working in-process estimator.
+- **A malformed backend URL stops darkroom starting**, naming the variable and never the value. It used to start,
+  and every call to that backend failed (a failed check, so nothing got through unchecked, but the cause was only in
+  the log). A URL must be absolute `http(s)` with a host and no query or fragment. This includes a suite-wide
+  `ARGUS_CURATOR_URL` that is a browser path prefix (`/api/curator`), as studio and halo use the name
+  (argus-cortex#209): set `ARGUS_DARKROOM_AGE_URL` (a URL, or `off`) where that name is in darkroom's environment.
+- **`off` (or `none`) in a backend variable means "not configured"**, whatever the suite-wide name says. It never
+  passes anything unchecked: `SINGGUARD_URL=off` refuses to start, `NUDENET_URL=off` refuses SFW generation,
+  `COMFYUI_URL=off` is a configuration error, and `AGE_URL=off` leaves the in-process extra in charge.
+- **Compose no longer stops at `SINGGUARD_URL` being unset**: it may come from `ARGUS_SINGGUARD_URL` or the mounted
+  suite file. With none of them, the container still refuses to start ("darkroom never runs unguarded"), now from
+  darkroom itself and not from compose.
+- The age check's health probe asks curator for `GET /health?checks=0`.
+- `GET /health` is no longer in `/openapi.json` (cortex's route is registered outside the schema).
+- `.env.example` drops `ARGUS_GPU_BROKER_FALLBACK` (compose still defaults it to `lease`).
+
 ### Changed
+
+- argus-cortex is pinned `>=0.16.1,<0.17`, and argus-curator, in the `age` and `dev` extras, `>=0.24,<0.25`: curator
+  0.23 caps cortex below 0.16, so this needs the curator release on cortex 0.16.
 
 - **`ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` are all the GPU broker needs** (argus-cortex 0.15,
   argus-cortex#204, argus-iris#47). The URL alone selects argus-iris; the tenant and kind defaults come from

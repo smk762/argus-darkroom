@@ -1,7 +1,8 @@
 """The darkroom FastAPI server.
 
 ========================  =====================================================================================
-``GET /health``           version, which backends answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``
+``GET /health``           cortex's ``ServiceHealth`` (status, checks) and darkroom's own fields: which backends
+                          answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``; ``?checks=0`` probes none
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
 ``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
@@ -30,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import io
 import json
@@ -38,7 +40,7 @@ import threading
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal
 
@@ -48,18 +50,19 @@ from argus_cortex.gpu_wire import PriorityClass
 from argus_cortex.moderation import NudeNetClient
 from argus_cortex.moderation import policies as policy_table
 from argus_cortex.server import WriteGuard, constant_refuse, cross_site_refuse
+from argus_cortex.service import DependencyCheck, install_health
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from argus_darkroom import __version__, gpu
-from argus_darkroom.age import HttpAgeEstimator, remote_age_status
+from argus_darkroom.age import AgeStatus, HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
 from argus_darkroom.config import Settings
 from argus_darkroom.engine import Engine
 from argus_darkroom.modelfiles import pick_default
-from argus_darkroom.models import DepthRecord, GenerationRecord, Outcome
+from argus_darkroom.models import RECORD_VERSION, DepthRecord, GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
 from argus_darkroom.store import DEPTH_SUFFIX, valid_id
 from argus_darkroom.workflow import checkpoint_family
@@ -67,6 +70,9 @@ from argus_darkroom.workflow import checkpoint_family
 logger = structlog.get_logger()
 
 PROBE_TIMEOUT = 2.0
+# A health check is one probe (and NudeNet's detector, asked alongside): given room past the probe's own timeout, so
+# the check reports what the probe found and is not cut off first.
+HEALTH_CHECK_TIMEOUT = 10.0
 MAX_PAGE = 200
 
 
@@ -82,6 +88,19 @@ def probe(url: str) -> bool:
     except (urllib.error.URLError, OSError, ValueError):
         return False
     return True
+
+
+class _Probes:
+    """What the health checks last found, for the fields darkroom's ``/health`` has always carried."""
+
+    def __init__(self, age: AgeStatus) -> None:
+        self.up = dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama"), False)
+        self.age = age
+        self.detector: str | None = None
+
+    def done(self, name: str, up: bool) -> bool:
+        self.up[name] = up
+        return up
 
 
 def nudenet_detector(client: NudeNetClient | None) -> str | None:
@@ -257,28 +276,51 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         return record
 
     # -- read-only info ----------------------------------------------------------------------------------
-    @app.get("/health")
-    def health() -> dict:
-        urls = {
-            "comfyui": cfg.comfyui_url.rstrip("/") + "/system_stats",
-            "singguard": cfg.singguard_url,
-            "nudenet": cfg.nudenet_url,
-            "ollama": cfg.ollama_url,
-        }
-        # Re-probe the estimator the engine actually uses, alongside the other backends; the boot status is stale.
-        remote = engine.scanner.age if isinstance(engine.scanner.age, HttpAgeEstimator) else None
-        with ThreadPoolExecutor(len(urls) + 2) as pool:
-            age_future = pool.submit(remote_age_status, remote.base_url) if remote is not None else None
-            detector_future = pool.submit(nudenet_detector, engine.scanner.nudenet)
-            up = dict(zip(urls, pool.map(probe, urls.values()), strict=True))
-            age = age_future.result() if age_future is not None else engine.age_status
-            detector = detector_future.result()
+    # GET /health: cortex's ServiceHealth, with every field darkroom served before it beside the contract's.
+    #
+    # Each backend is a dependency check, probed on every request (no cache: a client reads `backends` to decide
+    # what it may send, so the answer is as fresh as it was before the contract). `backends` holds what the checks
+    # last found; `GET /health?checks=0` probes nothing, so it repeats the last full answer (all false before one).
+    # Only a configured backend is a check: an unset NudeNet or Ollama is false in `backends` and absent from `checks`.
+    remote_age = engine.scanner.age if isinstance(engine.scanner.age, HttpAgeEstimator) else None
+    last = _Probes(age=engine.age_status)
+
+    def check_comfyui() -> bool:
+        return last.done("comfyui", probe(cfg.comfyui_url.rstrip("/") + "/system_stats"))
+
+    def check_singguard() -> bool:
+        return last.done("singguard", probe(cfg.singguard_url))
+
+    def check_nudenet() -> bool:
+        # The detector is asked alongside, as it was: reported, never used to decide.
+        with ThreadPoolExecutor(1) as pool:
+            detector = pool.submit(nudenet_detector, engine.scanner.nudenet)
+            up = last.done("nudenet", probe(cfg.nudenet_url))
+            last.detector = detector.result()
+        return up
+
+    def check_ollama() -> bool:
+        return last.done("ollama", probe(cfg.ollama_url))
+
+    def check_age(base_url: str) -> DependencyCheck:
+        # Re-probe the estimator the engine actually uses; the boot status is stale.
+        last.age = remote_age_status(base_url)
+        return DependencyCheck(ok=last.age.available, detail=last.age.reason)
+
+    checks: dict[str, Callable[[], bool | DependencyCheck]] = {"comfyui": check_comfyui, "singguard": check_singguard}
+    if cfg.nudenet_url:
+        checks["nudenet"] = check_nudenet
+    if cfg.ollama_url:
+        checks["ollama"] = check_ollama
+    if remote_age is not None:
+        checks["age"] = functools.partial(check_age, remote_age.base_url)
+
+    def health_fields() -> dict:
         return {
-            "version": __version__,
             # Whether each is configured and answers, never where: the URL can carry a credential. `age` is whether
             # the age check can run; `age_unavailable` says why not.
-            "backends": {**up, "age": age.available},
-            "age_unavailable": age.reason,
+            "backends": {**last.up, "age": last.age.available},
+            "age_unavailable": last.age.reason,
             # How the minor-exposed rule places exposure: "frame" or "overlap" (ARGUS_DARKROOM_MINOR_EXPOSED).
             "minor_exposed": cfg.minor_exposed,
             "policies": list(policy_table.POLICIES),
@@ -287,18 +329,31 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
             # The NudeNet detector the server reports ("640m", "320n"), or null when it does not say or is unreachable.
-            "nudenet_detector": detector,
+            "nudenet_detector": last.detector,
             "expansion_enabled": cfg.expansion_enabled,
             "workflow_loaded": engine.workflows is not None,
             "workflows": engine.workflows.names if engine.workflows else [],
             "devmode": cfg.devmode,
-            "read_only": cfg.read_only,
             # True only for demo/run.py's fake backends: nothing it "generates" touches a GPU.
             "demo": cfg.demo,
             "generating": busy.locked(),
             # The coordinator (none, lease or broker); how many runs are in flight, and how many may be.
             "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
         }
+
+    install_health(
+        app,
+        service="argus-darkroom",
+        version=__version__,
+        wire={"record_version": RECORD_VERSION},
+        checks=checks,
+        # Expansion is optional: a request that asks for it without Ollama is refused, and nothing else changes.
+        informational={"ollama"} & checks.keys(),
+        read_only=cfg.read_only,
+        extra=health_fields,
+        check_ttl_s=0,
+        check_timeout_s=HEALTH_CHECK_TIMEOUT,
+    )
 
     @app.get("/policies")
     def policies() -> dict:

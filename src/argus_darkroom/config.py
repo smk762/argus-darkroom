@@ -1,4 +1,10 @@
-"""Server and engine configuration from ``ARGUS_DARKROOM_*`` environment variables."""
+"""Server and engine configuration from ``ARGUS_DARKROOM_*`` environment variables.
+
+The URL of another service (SingGuard, NudeNet, ComfyUI, Ollama, curator) is found with ``argus_cortex.peers``:
+darkroom's own variable first, then the suite-wide ``ARGUS_<PEER>_URL``, each from the environment and then the suite
+file. A URL that is set but malformed is a :class:`ConfigError`, never "not configured": a typo must not turn a
+check off.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ from pathlib import Path
 
 from argus_cortex.moderation import THINKING_MODES
 from argus_cortex.moderation import policies as policy_table
+from argus_cortex.peers import PeerRefused, resolve_peer
 from argus_cortex.server import env_flag
 
 from argus_darkroom.models import MinorExposedRule
@@ -34,6 +41,9 @@ class Settings:
     ollama_model: str = ""
     nudenet_url: str = ""  # empty: SFW generation is unavailable
     age_url: str = ""  # curator's POST /faces?body=true; empty falls back to the in-process [age] extra
+    # The suite-wide curator (ARGUS_CURATOR_URL), used for the age check only when age_url is empty and the in-process
+    # extra cannot run: it can turn the check on, never replace an estimator that works.
+    age_fallback_url: str = ""
     # frame: any age estimate under 18 plus exposure anywhere; overlap: exposure placed on a young person's box
     minor_exposed: MinorExposedRule = "frame"
     policy: str = "default"
@@ -80,21 +90,42 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        """Read ``os.environ``. Flags go through cortex's ``env_flag``, which warns about a mistyped value."""
+        """Read ``os.environ``. Flags go through cortex's ``env_flag``, which warns about a mistyped value.
+
+        Peer URLs go through ``argus_cortex.peers``: darkroom's variable, then ``ARGUS_<PEER>_URL``. A blank one
+        falls through, ``off`` stops the lookup (the peer is not configured), and a malformed one is a
+        :class:`ConfigError` that names the variable and never the value.
+        """
 
         def get(name: str) -> str:
             """The value, or "" when unset or blank (``VAR=${VAR:-}`` in compose): a blank never beats a default."""
             return os.environ.get(PREFIX + name, "").strip()
 
+        def peer(name: str, var: str, default: str | None = None) -> tuple[str, bool]:
+            """The peer's URL ("" when not configured), and whether darkroom's own variable named it."""
+            own = PREFIX + var
+            try:
+                found = resolve_peer(name, own, default=default)
+            except PeerRefused as exc:
+                raise ConfigError(str(exc)) from None  # names the variable only: a URL can carry a credential
+            return (found.url, found.source.endswith(":" + own)) if found else ("", False)
+
         allow_nsfw = env_flag(PREFIX + "ALLOW_NSFW")
         defaults = cls.__dataclass_fields__
+        # No default here: `off` and "nothing set" both leave it empty, which __post_init__ refuses.
+        singguard_url, _ = peer("singguard", "SINGGUARD_URL")
+        comfyui_url, _ = peer("comfyui", "COMFYUI_URL", defaults["comfyui_url"].default)
+        if not comfyui_url:
+            raise ConfigError(f"{PREFIX}COMFYUI_URL is off: darkroom renders through ComfyUI")
+        curator_url, own_age_url = peer("curator", "AGE_URL")
         return cls(
-            singguard_url=get("SINGGUARD_URL"),
-            comfyui_url=get("COMFYUI_URL") or defaults["comfyui_url"].default,
-            ollama_url=get("OLLAMA_URL"),
+            singguard_url=singguard_url,
+            comfyui_url=comfyui_url,
+            ollama_url=peer("ollama", "OLLAMA_URL")[0],
             ollama_model=get("OLLAMA_MODEL"),
-            nudenet_url=get("NUDENET_URL"),
-            age_url=get("AGE_URL"),
+            nudenet_url=peer("nudenet", "NUDENET_URL")[0],
+            age_url=curator_url if own_age_url else "",
+            age_fallback_url="" if own_age_url else curator_url,
             minor_exposed=get("MINOR_EXPOSED") or defaults["minor_exposed"].default,
             policy=get("POLICY") or ("adult-granular" if allow_nsfw else "default"),
             thinking=get("THINKING") or defaults["thinking"].default,

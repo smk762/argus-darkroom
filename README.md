@@ -56,8 +56,8 @@ You need the services darkroom reaches by URL:
 
 - **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image and inpainting the `DarkroomLoadImageBase64`
   and `DarkroomLoadMaskBase64` nodes (below).
-- **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and an empty
-  `ARGUS_DARKROOM_SINGGUARD_URL` makes it refuse to start.
+- **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and with no
+  SingGuard URL (`ARGUS_DARKROOM_SINGGUARD_URL`, or the suite-wide `ARGUS_SINGGUARD_URL`) it refuses to start.
 - **NudeNet**. Without it, SFW generation is unavailable (HTTP 400) because every SFW output would be omitted.
 - **Ollama**, optional, for `--expand`.
 
@@ -194,16 +194,17 @@ conditions on, and `n` above 2 sends `-n`. A request may ask for 1 to 12.
 
 ## Configuration
 
-All settings are `ARGUS_DARKROOM_*` environment variables.
+All settings are `ARGUS_DARKROOM_*` environment variables. The five backend URLs also have a suite-wide name, shared
+by every Argus service on the host (see [Shared settings](#shared-settings-the-suite-file)).
 
 | Variable | Default | |
 |---|---|---|
-| `SINGGUARD_URL` | | **Required.** |
-| `COMFYUI_URL` | `http://localhost:8188` | |
-| `NUDENET_URL` | | Empty: SFW generation unavailable. Point it at the suite's shared 640m server (argus-cortex#79) once it is up; each record names the detector that scored it. |
-| `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra, or no age check. |
+| `SINGGUARD_URL` | | **Required**, here or as `ARGUS_SINGGUARD_URL`. |
+| `COMFYUI_URL` | `http://localhost:8188` | Unset: `ARGUS_COMFYUI_URL`, then the default. |
+| `NUDENET_URL` | | Unset: `ARGUS_NUDENET_URL`. Neither: SFW generation unavailable. Point it at the suite's shared 640m server (argus-cortex#79) once it is up; each record names the detector that scored it. |
+| `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra; where that cannot run, `ARGUS_CURATOR_URL`; else no age check. |
 | `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
-| `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. Unset, the URL is `ARGUS_OLLAMA_URL`. |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
 | `ALLOW_NSFW` | off | Lets an NSFW policy enforce. |
@@ -216,6 +217,42 @@ All settings are `ARGUS_DARKROOM_*` environment variables.
 | `READ_ONLY` | off | Answers 403 to every write from every origin: `POST /preflight`, `POST /generate/stream`, `DELETE /record/{id}` and both purges. Records and images stay readable. |
 
 `ALLOW_NSFW`, `DEVMODE` and `READ_ONLY` accept `1`/`true`/`yes`/`on`. A mistyped value is warned about, not silently ignored.
+
+### Shared settings (the suite file)
+
+Each backend URL is found with argus-cortex's `peers`: darkroom's own variable first, then the suite-wide one.
+
+| Backend | Darkroom's variable | Suite-wide |
+|---|---|---|
+| SingGuard | `ARGUS_DARKROOM_SINGGUARD_URL` | `ARGUS_SINGGUARD_URL` |
+| NudeNet | `ARGUS_DARKROOM_NUDENET_URL` | `ARGUS_NUDENET_URL` |
+| ComfyUI | `ARGUS_DARKROOM_COMFYUI_URL` | `ARGUS_COMFYUI_URL` |
+| Ollama | `ARGUS_DARKROOM_OLLAMA_URL` | `ARGUS_OLLAMA_URL` |
+| Curator (age check) | `ARGUS_DARKROOM_AGE_URL` | `ARGUS_CURATOR_URL`, as a fallback only |
+
+Each name is read from the environment, then from the suite file: `~/.config/argus/suite.env` (mode 600;
+`python -m argus_cortex.settings --init` creates it), or `/etc/argus/suite.env` in a container. The GPU broker's
+`ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` can live there too. Anything set for darkroom itself still wins.
+
+- **Blank falls through** to the suite-wide name. **`off`** (or `none`) in darkroom's variable keeps that backend
+  unconfigured whatever the suite says. For SingGuard that means darkroom refuses to start, and for NudeNet that SFW
+  generation is refused: `off` never lets something through unchecked.
+- **A URL that is set but malformed stops darkroom starting**, with an error that names the variable and never the
+  value. It must be an absolute `http(s)` URL with a host and no query. A typo is never read as "not configured".
+- **The age check takes the suite-wide curator last**: after `AGE_URL` and after the in-process `[age]` extra, so
+  it can turn the age check on where there was none and never replaces an estimator that works.
+- A suite-wide URL can turn a check on that was off: with `ARGUS_NUDENET_URL` in the suite file, a darkroom with no
+  `NUDENET_URL` now reaches NudeNet (SFW generation becomes available, gated on it), and with `ARGUS_OLLAMA_URL`
+  and `OLLAMA_MODEL`, `expand` becomes available.
+
+Under Compose, `.env` may use either name, and [`compose.suite.yaml`](compose.suite.yaml) mounts the suite file
+read-only (`COMPOSE_FILE=compose.yaml:compose.suite.yaml` in `.env`). It is a separate file because a host without a
+suite file could not start with the mount in place. Known limit (argus-cortex#218): cortex reads the file only when
+it belongs to the user reading it or to root, and the image runs as its own unprivileged user, so today the mounted
+file must be owned by root.
+
+The compose service carries the labels argus-iris's directory finds it by: `argus.peer: darkroom`,
+`argus.service: argus-darkroom`, `argus.health: /health`, `argus.port: "8106"`.
 
 ### GPU leases (argus-iris)
 
@@ -297,7 +334,7 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | version, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
+| `GET /health` | The suite's `ServiceHealth` (argus-cortex): `service`, `version`, `status`, `started_at`, `wire` (`record_version`), `checks`, `read_only`, `peer`, `build`. `status` is `ok`, or `degraded` when ComfyUI, SingGuard, a configured NudeNet or a configured remote age check does not answer (a configured Ollama is a check too, but never degrades); both are HTTP 200. Every backend is probed on each request; `?checks=0` probes none and repeats what the last full answer found. Beside the contract, darkroom's own fields, as before: `backends`, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
@@ -414,6 +451,9 @@ matched person that cannot be placed (a malformed box, an unknown face) is dropp
 `overlap` fails closed. `/health` reports the rule as `minor_exposed`.
 A record written before the setting existed has none of these fields and was decided by `frame`.
 
+With `AGE_URL` empty and no in-process extra (the Docker image has none), the suite-wide `ARGUS_CURATOR_URL` is used
+if it is set; a working in-process estimator is never replaced by it.
+
 Set `AGE_URL` to a curator 0.10+ that serves `POST /faces?body=true` (InsightFace + MiVOLO, a body crop per face, and
 unmatched people). The Docker image is meant to be used this way. A failed `people_check` is treated as age unavailable,
 not as "no one found", and so is an unmatched person with no estimate. An unavailable age check never deletes on its
@@ -424,7 +464,7 @@ uv pip install "argus-darkroom[age]"   # in-process fallback when AGE_URL is emp
 ```
 
 The extra runs curator's face pipeline in this process and needs the MiVOLO ONNX file (`argus-curator mivolo-convert`).
-Without a URL or the extra, records carry `age: null` and `/health` says why.
+Without a URL (darkroom's or the suite-wide one) or the extra, records carry `age: null` and `/health` says why.
 
 ## Wire schema
 

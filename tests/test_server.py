@@ -12,15 +12,18 @@ from dataclasses import replace
 
 import pytest
 from argus_cortex.moderation import policies as policy_table
+from argus_cortex.service import ServiceHealth
 from fake_comfyui import FakeComfyUI, event, grey_png
-from fakes import FakeFaces, safe_answer, unsafe_answer
+from fakes import FakeFaces, FakeNudeNet, safe_answer, unsafe_answer
 from PIL import Image
 from rig import EXAMPLES, ILLEGAL_A, SAMPLING, Rig, answers, is_image_scan
 from starlette.testclient import TestClient
 
+from argus_darkroom import __version__
 from argus_darkroom.comfyui import ComfyUIClient
 from argus_darkroom.config import ConfigError, Settings
 from argus_darkroom.modelfiles import ModelLibrary, pick_default
+from argus_darkroom.models import RECORD_VERSION
 from argus_darkroom.prompt import frame
 from argus_darkroom.server import create_app
 from argus_darkroom.server.app import POLICY_SUMMARIES
@@ -82,6 +85,69 @@ def test_health(rig) -> None:
     assert body["policies"] == list(policy_table.POLICIES)
     assert body["age_unavailable"]
     assert "127.0.0.1" not in json.dumps(body)  # whether each answers, never where
+
+
+OLD_HEALTH_FIELDS = {  # what /health carried before the suite contract: safelight, mint and iris read them
+    "version", "backends", "age_unavailable", "minor_exposed", "policies", "default_policy", "thinking",
+    "nsfw_allowed", "sfw_available", "nudenet_detector", "expansion_enabled", "workflow_loaded", "workflows",
+    "devmode", "read_only", "demo", "generating", "gpu",
+}  # fmt: skip
+
+
+def test_health_is_a_service_health_that_keeps_every_field_it_had(rig) -> None:
+    response = client(rig).get("/health")
+    body = response.json()
+    assert response.status_code == 200
+    assert set(body) >= OLD_HEALTH_FIELDS
+    health = ServiceHealth.model_validate(body)
+    assert (health.service, health.version, health.status) == ("argus-darkroom", __version__, "ok")
+    assert health.wire == {"record_version": RECORD_VERSION}
+    assert health.read_only is False
+    # A check per configured backend. Ollama is not configured, and the age check has no remote estimator here.
+    assert {name: check.ok for name, check in health.checks.items()} == {
+        "comfyui": True,
+        "singguard": True,
+        "nudenet": True,
+    }
+    assert body["gpu"] == {"coordinator": "none", "in_flight": 0, "limit": 1}
+    assert "127.0.0.1" not in json.dumps(body)
+
+
+def test_health_is_degraded_not_an_error_when_a_guard_backend_is_down(rig) -> None:
+    with FakeFaces(health={"faces": False}) as fake:
+        c = client(rig, nudenet_url="http://127.0.0.1:1", ollama_url="http://127.0.0.1:1", age_url=fake.url)
+        response = c.get("/health")
+    body = response.json()
+    assert response.status_code == 200  # callers read the body; a failed dependency is not a failed route
+    assert body["status"] == "degraded"
+    assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": False, "ollama": False, "age": False}
+    assert body["checks"]["nudenet"]["ok"] is False and body["checks"]["nudenet"]["required"] is True
+    assert body["checks"]["age"] == body["checks"]["age"] | {"ok": False, "required": True}
+    assert body["checks"]["age"]["detail"] == body["age_unavailable"] == "curator reports faces unavailable"
+    assert body["checks"]["ollama"]["required"] is False  # expansion is optional
+
+
+def test_health_is_ok_when_only_ollama_is_down(rig) -> None:
+    body = client(rig, ollama_url="http://127.0.0.1:1").get("/health").json()
+    assert body["status"] == "ok" and body["backends"]["ollama"] is False
+
+
+def test_health_probes_on_every_request(rig) -> None:
+    with FakeNudeNet() as fake:
+        c = client(rig, nudenet_url=fake.url)
+        assert c.get("/health").json()["backends"]["nudenet"] is True
+    body = c.get("/health").json()  # the server has gone: no cached answer says otherwise
+    assert body["backends"]["nudenet"] is False and body["status"] == "degraded"
+
+
+def test_health_without_checks_probes_nothing_and_repeats_the_last_answer(rig) -> None:
+    c = client(rig)
+    shallow = c.get("/health", params={"checks": "0"}).json()
+    assert shallow["status"] == "ok" and shallow["checks"] == {}
+    assert set(shallow) >= OLD_HEALTH_FIELDS
+    assert not any(shallow["backends"].values())  # nothing has been probed yet
+    c.get("/health")
+    assert c.get("/health", params={"checks": "0"}).json()["backends"]["singguard"] is True
 
 
 def test_health_age_is_up_when_curator_faces_answers(rig) -> None:
