@@ -12,13 +12,23 @@ services:
     restart: unless-stopped
     ports:
       - "${DARKROOM_PUBLISH:-127.0.0.1:8106}:8106"
+    # What argus-iris's directory reads to find this service (argus-cortex's service labels).
+    labels:
+      argus.peer: darkroom
+      argus.service: argus-darkroom
+      argus.health: /health
+      argus.port: "8106"
     environment:
-      ARGUS_DARKROOM_SINGGUARD_URL: ${SINGGUARD_URL:?set SINGGUARD_URL in .env - darkroom never runs unguarded}
-      ARGUS_DARKROOM_COMFYUI_URL: ${COMFYUI_URL:-http://host.docker.internal:8188}
-      ARGUS_DARKROOM_NUDENET_URL: ${NUDENET_URL:-}
+      # Each backend: this repo's name in .env, then the suite-wide ARGUS_<PEER>_URL from .env or the shell. Left
+      # blank here, darkroom looks in the suite file (compose.suite.yaml). SingGuard has no default: with no URL
+      # from any of them the container refuses to start, because darkroom never runs unguarded.
+      ARGUS_DARKROOM_SINGGUARD_URL: ${SINGGUARD_URL:-${ARGUS_SINGGUARD_URL:-}}
+      ARGUS_DARKROOM_COMFYUI_URL: ${COMFYUI_URL:-${ARGUS_COMFYUI_URL:-http://host.docker.internal:8188}}
+      ARGUS_DARKROOM_NUDENET_URL: ${NUDENET_URL:-${ARGUS_NUDENET_URL:-}}
+      # No suite-wide name here: ARGUS_CURATOR_URL is read from the suite file only, and only as a fallback.
       ARGUS_DARKROOM_AGE_URL: ${AGE_URL:-}
       ARGUS_DARKROOM_MINOR_EXPOSED: ${MINOR_EXPOSED:-frame}
-      ARGUS_DARKROOM_OLLAMA_URL: ${OLLAMA_URL:-}
+      ARGUS_DARKROOM_OLLAMA_URL: ${OLLAMA_URL:-${ARGUS_OLLAMA_URL:-}}
       ARGUS_DARKROOM_OLLAMA_MODEL: ${OLLAMA_MODEL:-}
       ARGUS_DARKROOM_THINKING: ${THINKING:-cascade}
       ARGUS_DARKROOM_DEFAULT_CHECKPOINT: ${DEFAULT_CHECKPOINT:-sdxl}
@@ -34,6 +44,8 @@ services:
       ARGUS_GPU_BROKER_TOKEN: ${ARGUS_GPU_BROKER_TOKEN:-}
       ARGUS_GPU_BROKER_FALLBACK: ${ARGUS_GPU_BROKER_FALLBACK:-lease}
       ARGUS_GPU_LEASE_TIMEOUT_S: ${ARGUS_GPU_LEASE_TIMEOUT_S:-}
+      # The argus.peer label, repeated: a process cannot read its own labels. /health reports it as `peer`.
+      ARGUS_PEER: darkroom
     volumes:
       - darkroom-data:/data
       - ${MODELS_ROOT:?set MODELS_ROOT in .env - the ComfyUI models folder}:/models:ro

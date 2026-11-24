@@ -163,7 +163,7 @@ class Engine:
         if nudenet is None and settings.nudenet_url:
             nudenet = NudeNetClient(settings.nudenet_url)
         if age is None:
-            age, self.age_status = default_estimator(settings.age_url)
+            age, self.age_status = default_estimator(settings.age_url, settings.age_fallback_url)
         else:
             self.age_status = AgeStatus(True)
         self.scanner = Scanner(self.guard, nudenet, age)
