@@ -57,7 +57,8 @@ USER darkroom
 VOLUME /data
 
 # Bound to all interfaces so the port can be published; publish it on 127.0.0.1 (compose.yaml does). Darkroom is not
-# for public hosting. It refuses to start without ARGUS_DARKROOM_SINGGUARD_URL.
+# for public hosting. Without a SingGuard URL it starts closed: every generation is a 503 and /health (200, status
+# "degraded") says why, so the healthcheck below passes and nothing restarts.
 EXPOSE 8106
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD ["python", "-c", "import urllib.request as u; u.urlopen('http://127.0.0.1:8106/health', timeout=4)"]

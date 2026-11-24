@@ -171,10 +171,12 @@ class FakeFaces:
         self.health_status = health_status
         self.posts: list[bytes] = []
         self.paths: list[str] = []
+        self.gets = 0
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
+                fake.gets += 1
                 health = fake.health
                 data = health if isinstance(health, bytes) else json.dumps(health).encode()
                 self.send_response(fake.health_status)

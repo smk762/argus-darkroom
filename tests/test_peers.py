@@ -77,12 +77,12 @@ def test_a_malformed_suite_wide_url_is_a_configuration_error_too(monkeypatch, su
 
 
 @pytest.mark.parametrize("value", ["", "  ", "off", "none", "OFF"])
-def test_singguard_blank_or_off_stops_the_server_starting(monkeypatch, value) -> None:
+def test_singguard_blank_or_off_builds_no_engine(monkeypatch, tmp_path, value) -> None:
     monkeypatch.setenv(OWN + "SINGGUARD_URL", value)
+    monkeypatch.setenv(OWN + "OUTPUT_ROOT", str(tmp_path))
     with pytest.raises(ConfigError, match="unguarded"):
         Settings.from_env()
-    with pytest.raises(ConfigError, match="unguarded"):
-        create_app()
+    assert create_app().state.engine is None  # the server starts closed: tests/test_unguarded.py
 
 
 def test_singguard_off_is_not_rescued_by_the_suite_wide_url(monkeypatch) -> None:

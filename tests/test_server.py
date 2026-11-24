@@ -68,10 +68,15 @@ def generate(c: TestClient, body: dict | None = None) -> dict:
 # --- start up and info ---------------------------------------------------------------------------------
 
 
-def test_an_empty_singguard_url_stops_the_server_starting(monkeypatch) -> None:
+def test_an_empty_singguard_url_builds_no_engine(monkeypatch, tmp_path) -> None:
+    """No settings, so no engine. The server starts closed instead (tests/test_unguarded.py)."""
     monkeypatch.delenv("ARGUS_DARKROOM_SINGGUARD_URL", raising=False)
+    monkeypatch.setenv("ARGUS_DARKROOM_OUTPUT_ROOT", str(tmp_path))
     with pytest.raises(ConfigError, match="unguarded"):
-        create_app()
+        Settings.from_env()
+    with pytest.raises(ConfigError, match="unguarded"):
+        Settings(singguard_url="")
+    assert create_app().state.engine is None
 
 
 def test_health(rig) -> None:

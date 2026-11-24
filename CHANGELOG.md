@@ -33,6 +33,24 @@ change on a host is listed under "Behaviour changes" below.
 
 ### Behaviour changes
 
+- **With no SingGuard URL the server starts closed instead of exiting** (#79). Under compose's
+  `restart: unless-stopped` the exit was a restart loop with the reason only in the container's log. Now, when the
+  URL is unset everywhere, `off`, or malformed, `argus-darkroom serve` stays up with no engine and no backend
+  client, logs one error naming the variables to set, and:
+  - `GET /health` answers 200 with `status: "degraded"`, a failed required `singguard` check ("SingGuard is not
+    configured: ...") and two new fields, `guard_configured: false` and `guard_unconfigured` (the reason; variable
+    names only, never a value). `guard_configured` is `true` on a guarded server. Every other field is still there,
+    with `backends` all false.
+  - `POST /generate/stream`, `POST /preflight`, `POST /depth/{id}`, `GET /models`, `GET /policies`, `POST /purge`,
+    `POST /purge/{id}` and any path the server does not have answer **503** `{"detail": "SingGuard is not
+    configured: ... Set ARGUS_DARKROOM_SINGGUARD_URL ... or the suite-wide ARGUS_SINGGUARD_URL ..."}`. The stream
+    route answers before any event. Nothing reaches ComfyUI, Ollama, NudeNet or the age check.
+  - What was already judged and released can still be read and removed: `GET /records`, `GET /record/{id}`,
+    `GET /image/{id}`, `GET /depth/{id}`, `GET /archive` and `DELETE /record/{id}`.
+
+  Darkroom still never runs unguarded: fix the variable and restart. The CLI's `generate` and `preflight` still exit
+  1 at once, and any other configuration error (a malformed NudeNet URL, an unknown policy) still stops the server
+  starting. A SingGuard that is configured but unreachable behaves as before.
 - **A suite-wide URL now reaches darkroom when its own variable is unset or blank.** With `ARGUS_NUDENET_URL` set
   for the host, a darkroom with no `NUDENET_URL` reaches NudeNet: SFW generation becomes available (gated on it),
   and NSFW-policy images get their exposure score, blur decision and the minor-exposed rule. With
@@ -47,11 +65,11 @@ change on a host is listed under "Behaviour changes" below.
   `ARGUS_CURATOR_URL` that is a browser path prefix (`/api/curator`), as studio and halo use the name
   (argus-cortex#209): set `ARGUS_DARKROOM_AGE_URL` (a URL, or `off`) where that name is in darkroom's environment.
 - **`off` (or `none`) in a backend variable means "not configured"**, whatever the suite-wide name says. It never
-  passes anything unchecked: `SINGGUARD_URL=off` refuses to start, `NUDENET_URL=off` refuses SFW generation,
+  passes anything unchecked: `SINGGUARD_URL=off` leaves the server closed (see above), `NUDENET_URL=off` refuses SFW generation,
   `COMFYUI_URL=off` is a configuration error, and `AGE_URL=off` leaves the in-process extra in charge.
 - **Compose no longer stops at `SINGGUARD_URL` being unset**: it may come from `ARGUS_SINGGUARD_URL` or the mounted
-  suite file. With none of them, the container still refuses to start ("darkroom never runs unguarded"), now from
-  darkroom itself and not from compose.
+  suite file. With none of them, the container starts closed (see above): "darkroom never runs unguarded" is now
+  held by darkroom itself and not by compose.
 - The age check's health probe asks curator for `GET /health?checks=0`.
 - `GET /health` is no longer in `/openapi.json` (cortex's route is registered outside the schema).
 - `.env.example` drops `ARGUS_GPU_BROKER_FALLBACK` (compose still defaults it to `lease`).

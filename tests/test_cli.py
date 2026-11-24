@@ -160,10 +160,28 @@ def test_a_lora_name_may_hold_a_colon(spec, name, weight) -> None:
     assert (lora.name, lora.weight) == (name, weight)
 
 
-def test_serve_refuses_to_start_without_singguard(monkeypatch) -> None:
+def test_serve_starts_closed_without_singguard(monkeypatch, tmp_path) -> None:
+    """The server stays up with no engine (tests/test_unguarded.py), so a container does not restart for ever."""
+    import uvicorn
+
+    started = {}
+    monkeypatch.setattr(uvicorn, "run", lambda application, **kw: started.update(app=application))
     monkeypatch.delenv("ARGUS_DARKROOM_SINGGUARD_URL", raising=False)
-    result = runner.invoke(app, ["serve"])
-    assert result.exit_code == 1 and "unguarded" in result.output
+    result = runner.invoke(app, ["serve", "--output-root", str(tmp_path / "o")])
+    assert result.exit_code == 0, result.output
+    assert started["app"].state.engine is None
+
+
+@pytest.mark.parametrize("value", [None, "off", "guard.invalid:9150"])
+@pytest.mark.parametrize("command", [["preflight", "a cat"], ["generate", "a cat", "--checkpoint", "x", *SAMPLING]])
+def test_the_other_commands_still_exit_at_once_without_singguard(monkeypatch, command, value) -> None:
+    if value is None:
+        monkeypatch.delenv("ARGUS_DARKROOM_SINGGUARD_URL", raising=False)
+    else:
+        monkeypatch.setenv("ARGUS_DARKROOM_SINGGUARD_URL", value)
+    result = runner.invoke(app, command)
+    assert result.exit_code == 1 and "configuration error" in result.output
+    assert "ARGUS_DARKROOM_SINGGUARD_URL" in plain(result.output) and "guard.invalid" not in result.output
 
 
 def test_serve_reports_a_workflow_that_cannot_be_loaded(monkeypatch, tmp_path, singguard) -> None:

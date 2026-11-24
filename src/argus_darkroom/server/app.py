@@ -18,6 +18,9 @@
 ``POST /purge/{id}``      one record and its image; exists only with ``ARGUS_DARKROOM_DEVMODE=1``
 ========================  =====================================================================================
 
+With no SingGuard URL the server still starts, as :func:`unguarded_app`: ``/health``, the record and image reads and
+``DELETE /record/{id}`` work, and everything else answers 503 naming the variables to set.
+
 Reads are open to the configured CORS origins; writes are refused from any other origin (``WriteGuard`` and
 ``cross_site_refuse``, because CORS alone is not a write boundary). The server binds to localhost by default.
 With ``ARGUS_DARKROOM_READ_ONLY=1`` every write is refused from every origin, ``POST /preflight`` included.
@@ -59,12 +62,12 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from argus_darkroom import __version__, gpu
 from argus_darkroom.age import AgeStatus, HttpAgeEstimator, remote_age_status
 from argus_darkroom.comfyui import GenerationError
-from argus_darkroom.config import Settings
+from argus_darkroom.config import GUARD_VARIABLES, Settings, Unguarded
 from argus_darkroom.engine import Engine
 from argus_darkroom.modelfiles import pick_default
 from argus_darkroom.models import RECORD_VERSION, DepthRecord, GenerationRecord, Outcome
 from argus_darkroom.request import GenerateRequest, RequestError
-from argus_darkroom.store import DEPTH_SUFFIX, valid_id
+from argus_darkroom.store import DEPTH_SUFFIX, RecordStore, valid_id
 from argus_darkroom.workflow import checkpoint_family
 
 logger = structlog.get_logger()
@@ -113,6 +116,7 @@ def nudenet_detector(client: NudeNetClient | None) -> str | None:
         return None
 
 
+GUARD_UNCONFIGURED = "SingGuard is not configured"
 READ_ONLY_REFUSAL = "argus-darkroom is read-only: generation, pre-flight and record changes are disabled"
 POLICY_SUMMARIES = {
     "default": "SingGuard's own rules, which treat sexual content as a risk. The SFW policy: with no illegal rules, "
@@ -220,11 +224,213 @@ class _Sink(io.RawIOBase):
         return chunk
 
 
+def _guard_writes(app: FastAPI, cors_origins: tuple[str, ...], read_only: bool) -> None:
+    """CORS and the write guard, the same on the guarded app and the unguarded one."""
+    wildcard = "*" in cors_origins
+    named = [o for o in cors_origins if o != "*"]
+    # A wildcard grants anonymous reads, never a cross-site write: naming an origin is the way to get those.
+    app.add_middleware(WriteGuard, refuse=cross_site_refuse(named))
+    if read_only:
+        # Method-based, so it covers every write route, current and future, and POST /preflight, which writes nothing
+        # but spends a SingGuard call. Added before CORS so that CORS stays outermost and a 403 keeps its headers.
+        app.add_middleware(WriteGuard, refuse=constant_refuse(READ_ONLY_REFUSAL))
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if wildcard else named,
+        allow_credentials=not wildcard,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+def _serve_records(app: FastAPI, store: RecordStore, record_lock: threading.Lock) -> Callable[[str], GenerationRecord]:
+    """The routes that only read what was already judged and released, or take it away: records, stored images, depth
+    maps, the archive, and a user removing their own output.
+
+    They are given the record store and nothing else: no guard, no engine and no backend client, so they work the same
+    with or without a SingGuard (:func:`unguarded_app`) and cannot generate, check or release anything. A route that
+    needs more than the store does not belong here. Returns the record lookup, for the routes that share it.
+    """
+
+    def record_or_404(record_id: str) -> GenerationRecord:
+        record = store.load(record_id) if valid_id(record_id) else None
+        if record is None:
+            raise HTTPException(404, "no such record")
+        return record
+
+    # -- records and images ------------------------------------------------------------------------------
+    @app.get("/records")
+    def records(
+        outcome: Outcome | None = None,
+        mode: Literal["sfw", "nsfw"] | None = None,
+        page: int = Query(1, ge=1),
+        page_size: int = Query(50, ge=1, le=MAX_PAGE),
+    ) -> dict:
+        found, total = store.page(outcome, mode, (page - 1) * page_size, page_size)
+        return {
+            "records": [r.model_dump(mode="json") for r in found],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        }
+
+    @app.get("/record/{record_id}")
+    def record(record_id: str) -> GenerationRecord:
+        return record_or_404(record_id)
+
+    @app.get("/image/{record_id}")
+    def image(record_id: str):
+        found = record_or_404(record_id)
+        path = store.image_path(record_id)
+        if found.image is None or found.image.path is None or not path.is_file():
+            # A deleted, omitted, refused, failed or user-removed record has no image to serve.
+            return JSONResponse(
+                {"detail": "this record has no stored image", "record_id": record_id, "outcome": found.outcome},
+                status_code=404,
+            )
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+    @app.delete("/record/{record_id}")
+    def remove(record_id: str) -> GenerationRecord:
+        """The user removing their own output: the file is deleted, the record stays, marked as removed."""
+        from datetime import UTC, datetime
+
+        with record_lock:
+            found = record_or_404(record_id)
+            if found.removed_at is not None:
+                return found
+            if found.image is None or found.image.path is None:
+                raise HTTPException(409, "this record has no stored image to remove")
+            store.remove_image(record_id)  # and its depth map
+            found.image.path = None
+            found.depth = None
+            found.removed_at = datetime.now(UTC)
+            store.save(found)
+            return found
+
+    @app.get("/depth/{record_id}")
+    def depth_image(record_id: str):
+        found = record_or_404(record_id)
+        path = store.depth_path(record_id)
+        if found.depth is None or not path.is_file():
+            return JSONResponse(
+                {"detail": "this record has no depth map", "record_id": record_id, "outcome": found.outcome},
+                status_code=404,
+            )
+        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
+
+    @app.get("/archive")
+    def archive() -> StreamingResponse:
+        """Every record (JSON), every stored image and every depth map (``depth/<id>.png``), as one zip. Deleted and
+        omitted images were never written, so they are not in it."""
+
+        def stream() -> Iterator[bytes]:
+            sink = _Sink()
+            with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
+                # nosemgrep: handler-scans-all - export-all: streaming every record is the operation
+                for path in sorted(store.root.glob("*.json")):
+                    if not valid_id(path.stem):
+                        continue
+                    zf.write(path, f"records/{path.name}")
+                    yield sink.take()
+                    image_path = store.root / f"{path.stem}.png"
+                    if image_path.is_file():
+                        zf.write(image_path, f"images/{image_path.name}")
+                        yield sink.take()
+                    depth_path = store.root / f"{path.stem}{DEPTH_SUFFIX}"
+                    if depth_path.is_file():
+                        zf.write(depth_path, f"depth/{path.stem}.png")
+                        yield sink.take()
+            yield sink.take()
+
+        return StreamingResponse(
+            stream(),
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="darkroom-archive.zip"'},
+        )
+
+    return record_or_404
+
+
+# Every method a client can send: the unguarded app's refusal answers all of them.
+_ALL_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+def unguarded_app(cfg: Unguarded) -> FastAPI:
+    """The server with no SingGuard configured: up, and closed.
+
+    It is not the guarded app with a switch turned off. No engine, guard, ComfyUI, Ollama, NudeNet or age client is
+    built here, and *cfg* holds none of their URLs, so no request can reach one. It serves ``/health`` (``degraded``,
+    with a failed required ``singguard`` check that names the variables to set), and what :func:`_serve_records` reads
+    from the record store. Every other path and method, including any route added to :func:`create_app` later, falls
+    through to one handler that answers 503 with the same reason. Generation, pre-flight, depth maps, models, policies
+    and purge are all in that set.
+    """
+    # Once, at startup: variable names only, never a value (a URL can carry a credential).
+    logger.error("guard.not_configured", detail=cfg.reason, serving="health and stored records only; all else is 503")
+    app = FastAPI(title="Argus Darkroom", description="Guarded image generation.", version=__version__)
+    app.state.engine = None
+    app.state.unguarded = cfg
+    _guard_writes(app, cfg.cors_origins, cfg.read_only)
+
+    def health_fields() -> dict:
+        # Every field the guarded /health has, so a client that reads one finds it: nothing answers, nothing can run.
+        return {
+            "backends": dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama", "age"), False),
+            "age_unavailable": GUARD_UNCONFIGURED,
+            "minor_exposed": cfg.minor_exposed,
+            "policies": list(policy_table.POLICIES),
+            "default_policy": cfg.policy,
+            "thinking": cfg.thinking,
+            "nsfw_allowed": cfg.allow_nsfw,
+            "sfw_available": False,
+            "nudenet_detector": None,
+            "expansion_enabled": False,
+            "workflow_loaded": False,
+            "workflows": [],
+            "devmode": cfg.devmode,
+            "demo": False,
+            "generating": False,
+            "gpu": {"coordinator": "none", "in_flight": 0, "limit": 0},
+            "guard_configured": False,
+            "guard_unconfigured": cfg.reason,
+        }
+
+    detail = f"{GUARD_UNCONFIGURED}: {cfg.problem}. Set {' or '.join(GUARD_VARIABLES)}"
+    install_health(
+        app,
+        service="argus-darkroom",
+        version=__version__,
+        wire={"record_version": RECORD_VERSION},
+        # Required and always failing, so the status is `degraded` (200, like an unreachable SingGuard): the
+        # container stays up and healthy enough to be asked why.
+        checks={"singguard": lambda: DependencyCheck(ok=False, detail=detail)},
+        read_only=cfg.read_only,
+        extra=health_fields,
+        check_ttl_s=0,
+    )
+    _serve_records(app, RecordStore(cfg.output_root), threading.Lock())
+
+    @app.api_route("/{path:path}", methods=_ALL_METHODS, include_in_schema=False)
+    def refuse(path: str) -> None:
+        raise HTTPException(503, cfg.reason)
+
+    return app
+
+
 def create_app(engine: Engine | None = None, settings: Settings | None = None) -> FastAPI:
-    """The app. With neither argument it reads ``ARGUS_DARKROOM_*`` from the environment, and a configuration
-    that cannot run (an empty ``SINGGUARD_URL``) raises :class:`~argus_darkroom.config.ConfigError`: darkroom
-    never runs unguarded, so the server does not start."""
-    engine = engine or Engine(settings or Settings.from_env())
+    """The app. With neither argument it reads ``ARGUS_DARKROOM_*`` from the environment.
+
+    Darkroom never runs unguarded. With no usable SingGuard URL (unset, ``off`` or malformed) there is no engine, and
+    what is returned is :func:`unguarded_app`: it stays up, says why on ``/health`` and refuses everything but reading
+    what was already released. Any other configuration that cannot run raises
+    :class:`~argus_darkroom.config.ConfigError`.
+    """
+    if engine is None:
+        found = settings or Settings.for_server()
+        if isinstance(found, Unguarded):
+            return unguarded_app(found)
+        engine = Engine(found)
     cfg = engine.settings
 
     @contextlib.asynccontextmanager
@@ -247,33 +453,13 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     # busy, which would refuse every removal during a generation.
     record_lock = threading.Lock()
 
-    # -- CORS and the write guard ------------------------------------------------------------------------
-    wildcard = "*" in cfg.cors_origins
-    named = [o for o in cfg.cors_origins if o != "*"]
-    # A wildcard grants anonymous reads, never a cross-site write: naming an origin is the way to get those.
-    app.add_middleware(WriteGuard, refuse=cross_site_refuse(named))
-    if cfg.read_only:
-        # Method-based, so it covers every write route, current and future, and POST /preflight, which writes nothing
-        # but spends a SingGuard call. Added before CORS so that CORS stays outermost and a 403 keeps its headers.
-        app.add_middleware(WriteGuard, refuse=constant_refuse(READ_ONLY_REFUSAL))
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"] if wildcard else named,
-        allow_credentials=not wildcard,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    _guard_writes(app, cfg.cors_origins, cfg.read_only)
+    record_or_404 = _serve_records(app, engine.store, record_lock)
 
     def busy_detail() -> str:
         if busy.limit == 1:
             return "a generation or depth map is already running"
         return f"{busy.limit} generations or depth maps are already queued or running"
-
-    def record_or_404(record_id: str) -> GenerationRecord:
-        record = engine.store.load(record_id) if valid_id(record_id) else None
-        if record is None:
-            raise HTTPException(404, "no such record")
-        return record
 
     # -- read-only info ----------------------------------------------------------------------------------
     # GET /health: cortex's ServiceHealth, with every field darkroom served before it beside the contract's.
@@ -339,6 +525,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "generating": busy.locked(),
             # The coordinator (none, lease or broker); how many runs are in flight, and how many may be.
             "gpu": {"coordinator": engine.gpu.name, "in_flight": busy.running, "limit": busy.limit},
+            # False only on the app that has no SingGuard URL and refuses everything (unguarded_app).
+            "guard_configured": True,
         }
 
     install_health(
@@ -460,56 +648,6 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
         )
 
-    # -- records and images ------------------------------------------------------------------------------
-    @app.get("/records")
-    def records(
-        outcome: Outcome | None = None,
-        mode: Literal["sfw", "nsfw"] | None = None,
-        page: int = Query(1, ge=1),
-        page_size: int = Query(50, ge=1, le=MAX_PAGE),
-    ) -> dict:
-        found, total = engine.store.page(outcome, mode, (page - 1) * page_size, page_size)
-        return {
-            "records": [r.model_dump(mode="json") for r in found],
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-        }
-
-    @app.get("/record/{record_id}")
-    def record(record_id: str) -> GenerationRecord:
-        return record_or_404(record_id)
-
-    @app.get("/image/{record_id}")
-    def image(record_id: str):
-        found = record_or_404(record_id)
-        path = engine.store.image_path(record_id)
-        if found.image is None or found.image.path is None or not path.is_file():
-            # A deleted, omitted, refused, failed or user-removed record has no image to serve.
-            return JSONResponse(
-                {"detail": "this record has no stored image", "record_id": record_id, "outcome": found.outcome},
-                status_code=404,
-            )
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
-
-    @app.delete("/record/{record_id}")
-    def remove(record_id: str) -> GenerationRecord:
-        """The user removing their own output: the file is deleted, the record stays, marked as removed."""
-        from datetime import UTC, datetime
-
-        with record_lock:
-            found = record_or_404(record_id)
-            if found.removed_at is not None:
-                return found
-            if found.image is None or found.image.path is None:
-                raise HTTPException(409, "this record has no stored image to remove")
-            engine.store.remove_image(record_id)  # and its depth map
-            found.image.path = None
-            found.depth = None
-            found.removed_at = datetime.now(UTC)
-            engine.store.save(found)
-            return found
-
     # -- depth maps --------------------------------------------------------------------------------------
     def stored_image(found: GenerationRecord) -> bytes:
         """The record's stored image, checked against the record's hash. 409 when it has none."""
@@ -561,48 +699,6 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             return await run_in_threadpool(compute)
         finally:
             busy.leave()
-
-    @app.get("/depth/{record_id}")
-    def depth_image(record_id: str):
-        found = record_or_404(record_id)
-        path = engine.store.depth_path(record_id)
-        if found.depth is None or not path.is_file():
-            return JSONResponse(
-                {"detail": "this record has no depth map", "record_id": record_id, "outcome": found.outcome},
-                status_code=404,
-            )
-        return FileResponse(path, media_type="image/png", headers={"Cache-Control": "private, no-store"})
-
-    @app.get("/archive")
-    def archive() -> StreamingResponse:
-        """Every record (JSON), every stored image and every depth map (``depth/<id>.png``), as one zip. Deleted and
-        omitted images were never written, so they are not in it."""
-        store = engine.store
-
-        def stream() -> Iterator[bytes]:
-            sink = _Sink()
-            with zipfile.ZipFile(sink, "w", zipfile.ZIP_DEFLATED) as zf:
-                # nosemgrep: handler-scans-all - export-all: streaming every record is the operation
-                for path in sorted(store.root.glob("*.json")):
-                    if not valid_id(path.stem):
-                        continue
-                    zf.write(path, f"records/{path.name}")
-                    yield sink.take()
-                    image_path = store.root / f"{path.stem}.png"
-                    if image_path.is_file():
-                        zf.write(image_path, f"images/{image_path.name}")
-                        yield sink.take()
-                    depth_path = store.root / f"{path.stem}{DEPTH_SUFFIX}"
-                    if depth_path.is_file():
-                        zf.write(depth_path, f"depth/{path.stem}.png")
-                        yield sink.take()
-            yield sink.take()
-
-        return StreamingResponse(
-            stream(),
-            media_type="application/zip",
-            headers={"Content-Disposition": 'attachment; filename="darkroom-archive.zip"'},
-        )
 
     # -- purge (devmode only) ----------------------------------------------------------------------------
     if cfg.devmode:
