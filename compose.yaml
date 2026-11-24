@@ -21,7 +21,8 @@ services:
     environment:
       # Each backend: this repo's name in .env, then the suite-wide ARGUS_<PEER>_URL from .env or the shell. Left
       # blank here, darkroom looks in the suite file (compose.suite.yaml). SingGuard has no default: with no URL
-      # from any of them the container refuses to start, because darkroom never runs unguarded.
+      # from any of them the container starts closed, because darkroom never runs unguarded. Every generation and
+      # check answers 503, and `curl localhost:8106/health` (status "degraded", `guard_unconfigured`) says what to set.
       ARGUS_DARKROOM_SINGGUARD_URL: ${SINGGUARD_URL:-${ARGUS_SINGGUARD_URL:-}}
       ARGUS_DARKROOM_COMFYUI_URL: ${COMFYUI_URL:-${ARGUS_COMFYUI_URL:-http://host.docker.internal:8188}}
       ARGUS_DARKROOM_NUDENET_URL: ${NUDENET_URL:-${ARGUS_NUDENET_URL:-}}

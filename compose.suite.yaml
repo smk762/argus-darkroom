@@ -9,7 +9,7 @@
 # Known limit (smk762/argus-cortex#218): argus-cortex reads the file only when it belongs to the user reading it or
 # to root, and darkroom's image runs as its own unprivileged user (uid 10001), which cannot open a mode-600 file
 # owned by you. So today the mounted file must be owned by root. A file that is refused or cannot be read is the
-# same as no file: a warning in the log, and darkroom starts only if .env names SingGuard.
+# same as no file: a warning in the log, and unless .env names SingGuard darkroom starts closed (503, see /health).
 services:
   darkroom:
     volumes:

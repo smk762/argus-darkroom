@@ -57,7 +57,8 @@ You need the services darkroom reaches by URL:
 - **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image and inpainting the `DarkroomLoadImageBase64`
   and `DarkroomLoadMaskBase64` nodes (below).
 - **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and with no
-  SingGuard URL (`ARGUS_DARKROOM_SINGGUARD_URL`, or the suite-wide `ARGUS_SINGGUARD_URL`) it refuses to start.
+  SingGuard URL (`ARGUS_DARKROOM_SINGGUARD_URL`, or the suite-wide `ARGUS_SINGGUARD_URL`) nothing is generated: the
+  server starts closed (see [Without SingGuard](#without-singguard)) and the CLI exits 1.
 - **NudeNet**. Without it, SFW generation is unavailable (HTTP 400) because every SFW output would be omitted.
 - **Ollama**, optional, for `--expand`.
 
@@ -199,7 +200,7 @@ by every Argus service on the host (see [Shared settings](#shared-settings-the-s
 
 | Variable | Default | |
 |---|---|---|
-| `SINGGUARD_URL` | | **Required**, here or as `ARGUS_SINGGUARD_URL`. |
+| `SINGGUARD_URL` | | **Required**, here or as `ARGUS_SINGGUARD_URL`. Without it the server starts [closed](#without-singguard). |
 | `COMFYUI_URL` | `http://localhost:8188` | Unset: `ARGUS_COMFYUI_URL`, then the default. |
 | `NUDENET_URL` | | Unset: `ARGUS_NUDENET_URL`. Neither: SFW generation unavailable. Point it at the suite's shared 640m server (argus-cortex#79) once it is up; each record names the detector that scored it. |
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra; where that cannot run, `ARGUS_CURATOR_URL`; else no age check. |
@@ -235,10 +236,13 @@ Each name is read from the environment, then from the suite file: `~/.config/arg
 `ARGUS_GPU_BROKER_URL` and `ARGUS_GPU_BROKER_TOKEN` can live there too. Anything set for darkroom itself still wins.
 
 - **Blank falls through** to the suite-wide name. **`off`** (or `none`) in darkroom's variable keeps that backend
-  unconfigured whatever the suite says. For SingGuard that means darkroom refuses to start, and for NudeNet that SFW
-  generation is refused: `off` never lets something through unchecked.
+  unconfigured whatever the suite says. For SingGuard that means the server starts
+  [closed](#without-singguard), and for NudeNet that SFW generation is refused: `off` never lets something through
+  unchecked.
 - **A URL that is set but malformed stops darkroom starting**, with an error that names the variable and never the
   value. It must be an absolute `http(s)` URL with a host and no query. A typo is never read as "not configured".
+  A malformed SingGuard URL is the one exception to "stops": the server starts closed, like one with no SingGuard
+  URL, and names the variable the same way.
 - **The age check takes the suite-wide curator last**: after `AGE_URL` and after the in-process `[age]` extra, so
   it can turn the age check on where there was none and never replaces an estimator that works.
 - A suite-wide URL can turn a check on that was off: with `ARGUS_NUDENET_URL` in the suite file, a darkroom with no
@@ -323,7 +327,7 @@ Exit codes for `generate` and `preflight`:
 - **`2`:** anything else (refused, deleted, omitted or failed), **and** a missing or malformed option, which the
   argument parser rejects with the same code. A script that needs to tell these apart should pass `--json` and read
   `outcome`, or look for `Usage:` on stderr.
-- **`1`:** a configuration error, such as no `SINGGUARD_URL` or a workflow that cannot load, or a request darkroom
+- **`1`:** a configuration error, such as no `SINGGUARD_URL` (the CLI never starts closed) or a workflow that cannot load, or a request darkroom
   refuses before running it, such as an unknown policy or a checkpoint with no workflow.
 
 `--expand` has Ollama rewrite the prompt. The expansion replaces your text (trigger words are appended) and is checked
@@ -349,6 +353,25 @@ silent fall back to the unexpanded prompt.
 | `POST /purge/{id}` | the same body: deletes one record and its image; only with `DEVMODE` |
 
 Writes are refused from origins that are not in `CORS_ORIGINS`.
+
+### Without SingGuard
+
+With no usable SingGuard URL (unset everywhere, `off`, or not a URL) `argus-darkroom serve` still starts, so a
+container does not restart for ever, but it is closed. It builds no engine and no client for ComfyUI, Ollama, NudeNet
+or the age check, and logs one error naming the variables to set (never a value).
+
+- `GET /health` answers 200 with `status: "degraded"`, one failed required check, `singguard` ("SingGuard is not
+  configured: ..."), `guard_configured: false` and `guard_unconfigured` (the reason and the variables to set). On a
+  guarded server `guard_configured` is `true`. `?checks=0` runs no checks, so read `guard_configured` there.
+- `POST /generate/stream`, `POST /preflight`, `POST /depth/{id}`, `GET /models`, `GET /policies`, `POST /purge`,
+  `POST /purge/{id}`, and any other path, answer **503** with `{"detail": "SingGuard is not configured: ..."}`. The
+  stream route answers before any event.
+- `GET /records`, `GET /record/{id}`, `GET /image/{id}`, `GET /depth/{id}`, `GET /archive` and `DELETE /record/{id}`
+  work: they read, or remove, only what was judged and released while a guard was configured.
+
+Set `SINGGUARD_URL` (compose's `.env`), `ARGUS_DARKROOM_SINGGUARD_URL` or the suite-wide `ARGUS_SINGGUARD_URL`, and
+restart. A SingGuard that is configured but does not answer is a different state: the server is guarded, and every
+check that fails refuses or deletes.
 
 ### Depth maps
 

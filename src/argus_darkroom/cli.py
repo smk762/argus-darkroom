@@ -198,7 +198,8 @@ def serve(
         [], "--cors-origin", help=f"Origin allowed to read and write (or {PREFIX}CORS_ORIGINS)"
     ),
 ) -> None:
-    """Start the darkroom server. Refuses to start without a SingGuard URL: darkroom never runs unguarded."""
+    """Start the darkroom server. Without a SingGuard URL it starts closed: every generation and check is refused
+    (503) and `/health` says which variables to set. Darkroom never runs unguarded."""
     try:
         import uvicorn
 
