@@ -68,7 +68,7 @@ Inpainting is image-to-image with a mask: `init_image.mask_base64` (PNG, JPEG or
 
 ### Pose input
 
-A pose input (`pose`) steers a text-to-image generation into a body pose, through a pose ControlNet. It is the
+A pose input (`pose`) steers a generation into a body pose, through a pose ControlNet. It is the
 suite's use of argus-puppet's conditioning (argus-puppet#1, phase 4). It supports both halves of that: **extraction**
 (the request gives a photo and darkroom takes the pose from it) and **enforcement** (the request gives the pose
 itself). It is built so that the ControlNet can never be a second way in for a picture.
@@ -108,10 +108,17 @@ itself). It is built so that the ControlNet can never be a second way in for a p
   be reproduced without the photo.
 - **No lease across the call.** Puppet is a GPU tenant of its own. Its calls are made before darkroom asks for the
   render's lease, and the caller's priority is passed on.
-- **Templates by mode.** Pose templates are `<family>[+lora<N>]+pose.json`, with `$pose_image` (the one loader's
-  `image`), `$controlnet` and `$pose_strength`, and none of the image-to-image slots: a request with both a pose and
-  an init image is a 400 for now. The ControlNet file is found and hashed under the models root's `controlnet/` like
-  a checkpoint.
+- **Templates by mode.** A template with a pose has `$pose_image` (the `image` of a loader of its own),
+  `$controlnet` and `$pose_strength`, and is named with `+pose` last: `<family>[+lora<N>]+pose.json` for
+  text-to-image, `+img2img+pose` and `+inpaint+pose` with an input image. Every loader's image is a placeholder
+  darkroom fills, the checked input or a skeleton drawing, and there is no third loader. A request gets the template
+  for its kind with a pose or a 400; never one without the pose. The ControlNet file is found and hashed under the
+  models root's `controlnet/` like a checkpoint.
+- **With an input image, and in a region.** A pose goes with image-to-image and inpainting: the input image is
+  scanned first, then a pose photo, and nothing is drawn or rendered unless both passed. `pose.area` is a rectangle
+  of the generation: puppet draws the skeleton at the rectangle's size, darkroom checks that drawing and sets it
+  there on black. That is how a figure is inpainted into one part of a picture in a chosen pose (argus-mint's
+  teasers). Darkroom adds only black, so the result is still a drawing.
 - **Did the output hold the pose?** A ControlNet does not always comply. After the verdict, and only for an image
   that was **released**, argus-puppet reads the pose in the output (`POST /pose`) and compares it with the people
   that were drawn (`POST /adherence`); the answer is `record.pose_adherence`. It is a measurement, never a verdict:

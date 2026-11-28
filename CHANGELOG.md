@@ -34,6 +34,13 @@ change on a host is listed under "Behaviour changes" below.
   - API: SSE events `pose_scan` and `pose`; `/health` gains `pose_available`, `backends.puppet` and an informational
     `puppet` check (it never degrades the status); `/models` gains `controlnets`, `default_pose_controlnet` and each
     checkpoint's `pose_lora_counts`; a workflow's `mode` may be `pose`.
+- **A pose with an input image, and in a region** (argus-puppet#1): `pose` now goes with `init_image`, with or
+  without a mask, so a figure can be inpainted into part of a picture in a chosen pose. Templates:
+  `<family>[+lora<N>]+img2img+pose.json` and `+inpaint+pose.json` (examples for `sdxl`), with a loader of its own for
+  `$pose_image`; a workflow's `mode` may be `img2img+pose` or `inpaint+pose`, and `/models` gains
+  `img2img_pose_lora_counts` and `inpaint_pose_lora_counts`. New `pose.area` (`{x, y, width, height}`, in the
+  generation's pixels): the skeleton is fitted into it and the rest of the control image is black. The record's
+  `request.pose.area` keeps it. The input image is scanned before anything is drawn.
 - **Pose adherence** (argus-puppet#1): after a pose image is released (`passed` or `review`), argus-puppet reads the
   pose in it and compares it with the pose that was drawn (`POST /adherence`, argus-puppet wire 1.4), and the record
   gains `pose_adherence`: `adheres`, `threshold`, `distance`, per-person `matches` (with `mirrored` for a figure that

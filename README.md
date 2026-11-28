@@ -166,21 +166,23 @@ corners), give it to the sampler with `SetLatentNoiseMask` on the encoded input,
 `ImageCompositeMasked`: the decoded result over the scaled input, through the grown mask, so every pixel outside it is
 exactly the input's.
 
-A **pose** template has `$pose_image`, as the `image` of exactly one `DarkroomLoadImageBase64` node, with
-`$controlnet` (a `ControlNetLoader`'s `control_net_name`) and `$pose_strength`: all three or none. It takes no
-`$init_image`, `$init_mask` or `$denoise`: pose conditioning is text-to-image for now. The examples load the ControlNet
-and put a `ControlNetApplyAdvanced` between the two prompts and the `KSampler`. `$pose_image` is filled with the
-skeleton argus-puppet drew at `$width` x `$height`, so the template needs no preprocessor and no scaling.
+A template **with a pose** has `$pose_image`, as the `image` of a `DarkroomLoadImageBase64` node of its own, with
+`$controlnet` (a `ControlNetLoader`'s `control_net_name`) and `$pose_strength`: all three or none. A pose goes with
+any of the three kinds above: a text-to-image template with one is a pose template, and an image-to-image or
+inpainting template may have one too (it then has two loaders, one for `$init_image` and one for `$pose_image`, and
+no other). The examples load the ControlNet and put a `ControlNetApplyAdvanced` between the two prompts and the
+`KSampler`. `$pose_image` is filled with a skeleton drawing of `$width` x `$height`, so the template needs no
+preprocessor and no scaling.
 
 `WORKFLOW` names a file or a directory:
 
 - **A directory** holds one template per checkpoint family, LoRA count and mode, named `<family>.json` (no LoRA slots)
-  or `<family>+lora<N>.json` (exactly N), with `+img2img` at the end for an image-to-image template
-  (`sdxl+lora1+img2img.json`), `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`) or `+pose` for a pose one
-  (`sdxl+lora1+pose.json`). A checkpoint's
+  or `<family>+lora<N>.json` (exactly N), with `+img2img` for an image-to-image template
+  (`sdxl+lora1+img2img.json`) or `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`), and `+pose` at the
+  end for one with a pose (`sdxl+lora1+pose.json`, `sdxl+lora1+inpaint+pose.json`). A checkpoint's
   family is its top-level folder under `checkpoints/`, so `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
   checkpoint outside a family folder, an input image with no `+img2img` template, a mask with no `+inpaint` one or a
-  pose input with no `+pose` one, the
+  pose input with no `+pose` one for the same kind (an inpainting request with a pose needs `+inpaint+pose`), the
   request is a 400. Darkroom never falls back to another family's template, LoRA count or mode. A misnamed or broken
   file, or one whose name and `$init_image` / `$init_mask` / `$pose_image` slots disagree, stops the server from
   starting.
@@ -196,7 +198,7 @@ none). Records name the template in `request.workflow`, beside `workflow_sha256`
 
 | Family | Files | Sampling |
 |---|---|---|
-| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint`; pose `sdxl+pose`, `sdxl+lora1+pose` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint`; pose `sdxl+pose`, `sdxl+lora1+pose`; image-to-image with a pose `sdxl+img2img+pose`, `sdxl+lora1+img2img+pose`; inpainting with a pose `sdxl+inpaint+pose`, `sdxl+lora1+inpaint+pose`, `sdxl+lora2+inpaint+pose` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
 | `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
 | `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
 | `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |
@@ -359,7 +361,7 @@ silent fall back to the unexpanded prompt.
 |---|---|
 | `GET /health` | The suite's `ServiceHealth` (argus-cortex): `service`, `version`, `status`, `started_at`, `wire` (`record_version`), `checks`, `read_only`, `peer`, `build`. `status` is `ok`, or `degraded` when ComfyUI, SingGuard, a configured NudeNet or a configured remote age check does not answer (a configured Ollama or argus-puppet is a check too, but never degrades); both are HTTP 200. Every backend is probed on each request; `?checks=0` probes none and repeats what the last full answer found. Beside the contract, darkroom's own fields, as before: `backends`, whether each backend answers (booleans, `puppet` among them), `nsfw_allowed`, `sfw_available`, `pose_available` (argus-puppet is configured, so a request may carry a `pose`), `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
-| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts, pose_lora_counts}`, LoRAs, VAEs and ControlNets as `{name}` (`loras`, `vaes`, `controlnets`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img`, `inpaint` or `pose`; `img2img` is true for plain image-to-image only), `default_checkpoint`, `default_pose_controlnet` (null when `POSE_CONTROLNET` is unset or names no file), plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
+| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts, pose_lora_counts, img2img_pose_lora_counts, inpaint_pose_lora_counts}`, LoRAs, VAEs and ControlNets as `{name}` (`loras`, `vaes`, `controlnets`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img`, `inpaint`, `pose`, `img2img+pose` or `inpaint+pose`; `img2img` is true for plain image-to-image only), `default_checkpoint`, `default_pose_controlnet` (null when `POSE_CONTROLNET` is unset or names no file), plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` or a `pose` photo is not checked here, only during a generation |
 | `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way; none for a pose given as keypoints) and then `pose {people, control: {sha256,width,height}}` once the skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `pose_adherence {adheres, distance, ...}` (a released pose image only, just before `complete`), `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
@@ -418,7 +420,7 @@ and `guard.input` (the input's `scans`, `nudenet`, `age`, `outcome` and `reason`
 
 ### Pose input
 
-`pose` steers a text-to-image generation into a body pose, through a pose ControlNet. The pose is given one of two
+`pose` steers a generation into a body pose, through a pose ControlNet. The pose is given one of two
 ways, and exactly one:
 
 - **A photo** (`data_base64`): darkroom **extracts** the pose from it.
@@ -436,6 +438,7 @@ ways, and exactly one:
 | `body`, `hands`, `face` | default true: which parts of the skeleton are drawn (at least one). Turn `face` off if faces come out distorted, `hands` off for a body-only ControlNet |
 | `primary_only` | default false: draw only the primary subject instead of everyone (at most 20 people) |
 | `fit` | `contain` (default: the whole frame, letterboxed), `cover` (fills the canvas, edges cropped) or `skeleton` (the figure fitted to the canvas, ignoring the frame) |
+| `area` | optional `{x, y, width, height}` in the generation's pixels: where the skeleton is drawn. Default the whole generation. Reaching outside the generation is a 400 |
 | `verify` | default true: once the image is released, check that it holds the pose (see below). False skips the check |
 | `verify_threshold` | optional, 0 to 10: the pose distance below which a person holds the pose. Default argus-puppet's, 0.25 (lenient; about 0.1 is strict) |
 
@@ -460,11 +463,18 @@ no appearance. Nobody in a photo, a puppet that does not answer, or a drawing th
 record (`pose: <why>`), and nothing is rendered: darkroom never falls back to generating without the pose.
 
 **A request cannot bring its own control image.** Any picture would do as one, and nobody would have checked it, so
-`pose` has no field for it. `pose` cannot be combined with `init_image` yet, and needs a `+pose`
-[template](#workflow-templates) for the checkpoint's family and LoRA count.
+`pose` has no field for it.
+
+**With an input image.** `pose` goes with `init_image`, with or without a mask: the input is scanned as always, then
+the pose's photo if it has one, and the render is steered by both. It needs a
+[template](#workflow-templates) for that kind with a pose (`+img2img+pose`, `+inpaint+pose`) for the checkpoint's
+family and LoRA count; a text-to-image request with a pose needs `+pose`. For inpainting a figure into part of a
+picture, give `area` the region being painted: the skeleton is fitted into it (by `fit`; `skeleton` fills the region
+with the figure) and the rest of the control image is black, so the ControlNet asks for nobody anywhere else. Without
+`area` the skeleton is fitted to the whole generation.
 
 The record keeps the skeleton in full, so the run can be reproduced: `request.pose` holds `source` (`photo` or
-`keypoints`); `controlnet` as `{name, sha256}`; `strength`, `body`, `hands`, `face`, `primary_only`, `fit`; `people`,
+`keypoints`); `controlnet` as `{name, sha256}`; `strength`, `body`, `hands`, `face`, `primary_only`, `fit`, `area` (`[x, y, width, height]` or null); `people`,
 each `{keypoints, primary}` with 133 `(x, y, score)` points (`layout`: `coco_wholebody_133`); and `control`
 (`sha256`, `width`, `height` of the drawing).
 

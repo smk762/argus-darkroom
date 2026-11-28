@@ -52,6 +52,7 @@ from argus_darkroom.images import (
     load_control,
     load_input,
     load_mask,
+    place_control,
 )
 from argus_darkroom.modelfiles import ModelLibrary
 from argus_darkroom.models import (
@@ -91,6 +92,7 @@ from argus_darkroom.workflow import (
     WorkflowSet,
     load_workflows,
     render,
+    with_pose,
 )
 
 logger = structlog.get_logger()
@@ -381,10 +383,6 @@ class Engine:
         pose: InputImage | None = None
         controlnet: ModelRef | None = None
         if request.pose is not None:
-            if init is not None:
-                raise RequestError(
-                    "a pose input cannot be combined with an init image: pose conditioning is text-to-image"
-                )
             if self.puppet is None:
                 raise RequestError(
                     "a pose input needs argus-puppet to read the pose (ARGUS_DARKROOM_PUPPET_URL or ARGUS_PUPPET_URL)"
@@ -401,15 +399,15 @@ class Engine:
                 except UnreadableImage as exc:
                     raise RequestError(str(exc)) from exc
             controlnet = self.models.ref("controlnet", name)
-        mode: Mode = (
-            "pose"
-            if controlnet is not None
-            else "txt2img"
-            if init is None
-            else "img2img"
-            if mask is None
-            else "inpaint"
-        )
+        if request.pose is not None and request.pose.area is not None:
+            area = request.pose.area
+            if area.x + area.width > request.sampling.width or area.y + area.height > request.sampling.height:
+                raise RequestError(
+                    f"pose.area reaches {area.x + area.width}x{area.y + area.height} but the generation is "
+                    f"{request.sampling.width}x{request.sampling.height}"
+                )
+        base = "txt2img" if init is None else "img2img" if mask is None else "inpaint"
+        mode: Mode = with_pose(base, controlnet is not None)
         try:
             workflow = self.workflows.select(request.checkpoint, len(request.loras), mode)
         except WorkflowError as exc:
@@ -602,6 +600,7 @@ class Engine:
             "face": asked.face,
             "primary_only": asked.primary_only,
             "fit": asked.fit,
+            "area": None if asked.area is None else (asked.area.x, asked.area.y, asked.area.width, asked.area.height),
             "control": None
             if control is None
             else ControlImageRef(sha256=control.image.sha256, width=control.image.width, height=control.image.height),
@@ -775,10 +774,17 @@ class Engine:
             frame = (asked.width, asked.height)
             people = asked.people()[:1] if asked.primary_only else asked.people()
         canvas = (request.sampling.width, request.sampling.height)
-        drawing = self.puppet.draw(
-            people, frame, canvas, body=asked.body, hands=asked.hands, face=asked.face, fit=asked.fit
+        # With an area, the skeleton is drawn at the area's size and set there on a black canvas: the figure lands
+        # where the request says (an inpainting mask's region), and everywhere else the ControlNet sees nobody.
+        area = asked.area
+        size = canvas if area is None else (area.width, area.height)
+        drawing = load_control(
+            self.puppet.draw(people, frame, size, body=asked.body, hands=asked.hands, face=asked.face, fit=asked.fit),
+            size,
         )
-        return PoseControl(people=people, estimator=estimator, image=load_control(drawing, canvas))
+        if area is not None:
+            drawing = place_control(drawing, canvas, (area.x, area.y))
+        return PoseControl(people=people, estimator=estimator, image=drawing)
 
     def pose_adherence(
         self,

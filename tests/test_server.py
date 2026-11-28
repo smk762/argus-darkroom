@@ -218,6 +218,8 @@ def test_models(rig) -> None:
                 "img2img_lora_counts": [],
                 "inpaint_lora_counts": [],
                 "pose_lora_counts": [],
+                "img2img_pose_lora_counts": [],
+                "inpaint_pose_lora_counts": [],
             }
         ],
         "default_checkpoint": None,  # nothing under sdxl/ in the rig
@@ -259,7 +261,13 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         path.write_bytes(name.encode())
     c = client(rig, workflow=EXAMPLES)
     body = c.get("/models").json()
-    per_mode = ("img2img_lora_counts", "inpaint_lora_counts", "pose_lora_counts")
+    per_mode = (
+        "img2img_lora_counts",
+        "inpaint_lora_counts",
+        "pose_lora_counts",
+        "img2img_pose_lora_counts",
+        "inpaint_pose_lora_counts",
+    )
     assert [{k: v for k, v in c.items() if k not in per_mode} for c in body["checkpoints"]] == [
         {"name": "base.safetensors", "family": None, "lora_counts": []},  # not in a family folder: cannot render
         {"name": "flux/f.safetensors", "family": "flux", "lora_counts": [0, 1, 2]},
@@ -280,6 +288,11 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+lora2+inpaint",
         "sdxl+pose",
         "sdxl+lora1+pose",
+        "sdxl+img2img+pose",
+        "sdxl+lora1+img2img+pose",
+        "sdxl+inpaint+pose",
+        "sdxl+lora1+inpaint+pose",
+        "sdxl+lora2+inpaint+pose",
         "flux",
         "flux+lora1",
         "flux+lora2",
@@ -296,6 +309,11 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+lora2+inpaint": ("inpaint", False),
         "sdxl+pose": ("pose", False),
         "sdxl+lora1+pose": ("pose", False),
+        "sdxl+img2img+pose": ("img2img+pose", False),
+        "sdxl+lora1+img2img+pose": ("img2img+pose", False),
+        "sdxl+inpaint+pose": ("inpaint+pose", False),
+        "sdxl+lora1+inpaint+pose": ("inpaint+pose", False),
+        "sdxl+lora2+inpaint+pose": ("inpaint+pose", False),
     }
     assert sorted(c.get("/health").json()["workflows"]) == sorted(by_name)
 

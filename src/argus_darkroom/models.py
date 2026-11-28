@@ -165,6 +165,8 @@ class PoseRef(BaseModel):
     face: bool = True
     primary_only: bool = False
     fit: str = "contain"
+    # The rectangle of the generation the skeleton was fitted into (x, y, width, height); null: all of it.
+    area: tuple[int, int, int, int] | None = None
     layout: str = POSE_LAYOUT
     # The people that were drawn: everyone (at most MAX_POSE_PEOPLE), or the primary subject alone.
     people: list[PosePerson] = Field(default_factory=list)
