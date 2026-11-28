@@ -9,9 +9,9 @@ from argus_darkroom.hashing import sha256_cached
 from argus_darkroom.models import LoRARef, ModelRef
 from argus_darkroom.request import RequestError
 
-Kind = Literal["checkpoint", "lora", "vae"]
+Kind = Literal["checkpoint", "lora", "vae", "controlnet"]
 # ComfyUI's own layout under its ``models`` directory.
-SUBDIRS: dict[Kind, str] = {"checkpoint": "checkpoints", "lora": "loras", "vae": "vae"}
+SUBDIRS: dict[Kind, str] = {"checkpoint": "checkpoints", "lora": "loras", "vae": "vae", "controlnet": "controlnet"}
 SUFFIXES = (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".sft")
 
 

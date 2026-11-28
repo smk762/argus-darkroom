@@ -25,7 +25,7 @@ def no_gpu_broker(monkeypatch) -> None:
 def no_suite_settings(monkeypatch) -> None:
     """A developer's suite file and suite-wide peer URLs must not reach the tests: a test names every URL it uses."""
     monkeypatch.setenv("ARGUS_ENV_FILE", "off")
-    for peer in ("SINGGUARD", "NUDENET", "COMFYUI", "OLLAMA", "CURATOR"):
+    for peer in ("SINGGUARD", "NUDENET", "COMFYUI", "OLLAMA", "CURATOR", "PUPPET"):
         monkeypatch.delenv(f"ARGUS_{peer}_URL", raising=False)
 
 

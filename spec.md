@@ -38,7 +38,7 @@ One generation runs through these steps, and the user sees each one.
    - Unsafe under the enforcing policy on non-illegal rules only: **refused** in SFW mode, with the reason. In NSFW mode the verdict is shown as a warning and generation proceeds, and the output scan decides (see [Mode](#mode)).
    - Advisory policies that flag are shown, not acted on.
    - A failed check is a refusal, recorded as `unchecked`.
-3. **Input scan** (image-to-image and inpainting only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt.
+3. **Input scan** (image-to-image and inpainting only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt. A pose photo is scanned the same way, and then read and drawn by argus-puppet (see [Pose input](#pose-input)).
 4. **Generate.** ComfyUI renders with `SaveImageWebsocket`. The bytes come back over the websocket and are held in memory only. Darkroom then deletes the prompt from ComfyUI's history.
 5. **Scan.** For each selected policy, SingGuard judges the image twice: **isolated** (no text) and **with prompt** (the framed final prompt as the user turn). NudeNet scores the exposed classes once. If the age check is available, MiVOLO estimates an age for each detected face. Requests use the configured thinking mode, `cascade` by default. The age estimate is never sent to SingGuard as context: the isolated scan has to stay text-free, and the with-prompt scan measures the prompt alone.
 6. **Decide**, from the scans (see [Verdicts](#verdicts)): **passed**, **review** or **deleted**.
@@ -66,7 +66,46 @@ Inpainting is image-to-image with a mask: `init_image.mask_base64` (PNG, JPEG or
 - **Unmasked pixels stay the input's.** The example templates scale the mask exactly as the image (to `$width` x `$height`, cropped to the centre), grow its edge by 8 pixels so the repaint blends, restrict the sampler's noise to it (`SetLatentNoiseMask`), and composite the decoded result over the scaled input through the same grown mask (`ImageCompositeMasked`). The VAE round trip would otherwise shift every pixel slightly; the composite keeps every pixel outside the grown mask exactly the scaled input's.
 - **Templates by mode.** Inpainting templates are `<family>[+lora<N>]+inpaint.json`, with `$init_image`, `$init_mask` (the mask loader's `mask`, exactly one) and `$denoise`. Only an inpainting template may contain the mask loader. A request with a mask and no such template is a 400; darkroom never drops the mask and renders image-to-image instead.
 
-Reference images (IP-Adapter and the like) are not supported.
+### Pose input
+
+A pose input (`pose`) steers a text-to-image generation into the body pose of a photo, through a pose ControlNet. It
+is the first use of argus-puppet's conditioning (argus-puppet#1, phase 4), and it is built so that the ControlNet can
+never be a second way in for a picture.
+
+- **The request carries the photo, and only the photo.** `pose.data_base64` has the init image's formats and limits.
+  A request cannot send a control image (any picture would do as one, and nobody would have checked it) or keypoints
+  (a pose from no checked photo). A pose chosen from a library is sent as that pose's source photo.
+- **The photo is an input image like any other.** It is decoded once into the PNG that is judged, as the init image
+  is, and after the text pre-flight it gets the same checks as an output, with the same rule: only `passed` goes on.
+  Anything else is **refused**, `outcome_reason` `pose image: <the photo's reason>`, `critical` as the photo's own
+  decision says. Up to that point the photo has gone to the guards and nowhere else.
+- **argus-puppet reads it and draws it; darkroom does neither.** Once the photo has passed, puppet's `POST /pose`
+  returns every person's 133 whole-body keypoints (it writes nothing for that route), and `POST /render` draws them
+  in the OpenPose convention at the generation's size. Only numbers go into the drawing, so it cannot carry the
+  photo's appearance. Darkroom loads no pose model and draws no skeleton (the suite map gives both to puppet). The
+  URL comes from the settings only, that host is the only one called, and a redirect is not followed.
+- **Puppet's answers are checked, not trusted.** The keypoints must be 133 finite points per person, in the
+  `coco_wholebody_133` layout, about an image of the size that was sent. The drawing must be a PNG of exactly the
+  generation's size, with at most 256 distinct colours and more than one. The convention draws with about sixty flat
+  colours however many people there are; a photograph has thousands. So a puppet that answered with a picture,
+  through a fault or a compromise, cannot get it to the ControlNet. The drawing is re-encoded with no metadata.
+- **The drawing is not scanned.** Like an inpainting mask it has no imagery of its own: joint positions, in fixed
+  colours. What could be harmful is the photo, which was judged in full, and the output, which is judged as usual.
+- **A pose that cannot be read or drawn is a failure, not a refusal.** Nobody in the photo, a puppet that is down or
+  busy, or an answer that fails the checks above: outcome **failed**, `outcome_reason` `pose: <why>`, nothing sent to
+  ComfyUI. Darkroom never falls back to rendering without the pose.
+- **Never written.** The photo is held in memory and dropped. The drawing travels to ComfyUI as base64 inside the
+  prompt graph, to `DarkroomLoadImageBase64`, and the `/history` delete removes it with the prompt. The record keeps
+  the photo's hashes and the skeleton itself (see [Record](#record)): keypoints are numbers, and with them the run
+  can be reproduced without the photo.
+- **No lease across the call.** Puppet is a GPU tenant of its own. Both calls are made before darkroom asks for the
+  render's lease, and the caller's priority is passed on.
+- **Templates by mode.** Pose templates are `<family>[+lora<N>]+pose.json`, with `$pose_image` (the one loader's
+  `image`), `$controlnet` and `$pose_strength`, and none of the image-to-image slots: a request with both a pose and
+  an init image is a 400 for now. The ControlNet file is found and hashed under the models root's `controlnet/` like
+  a checkpoint.
+
+Other reference images (IP-Adapter and the like) are not supported.
 
 ## Policies
 
@@ -165,7 +204,7 @@ A record is kept for every attempt, including refused and deleted ones. It is th
 GenerationRecord (record_version "1.0", wire schema committed)
   id, created_at, darkroom_version
   outcome: refused | passed | review | deleted | omitted | failed
-  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", "input image: " and one of those, or the generation error (a render of one colour is a generation error: there is nothing to judge)
+  outcome_reason: rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", "input image: " or "pose image: " and one of those, "pose: " and why a pose could not be read or drawn, or the generation error (a render of one colour is a generation error: there is nothing to judge)
   critical: bool                # true for illegal and minor-exposed deletions; false for everything else
   request
     mode: sfw | nsfw            # derived from guard.enforcing_policy, stored for filtering
@@ -179,6 +218,11 @@ GenerationRecord (record_version "1.0", wire schema committed)
     workflow_sha256, workflow (the template's name, e.g. "sdxl+lora1"), engine "comfyui", engine_version
     init_image: {sha256, phash, width, height, source_sha256, denoise, mask} | null   # image-to-image; never the pixels
       mask: {sha256, source_sha256, masked_fraction} | null                          # inpainting; never the pixels
+    pose: {sha256, phash, width, height, source_sha256,      # the pose photo's identity; never the pixels
+           controlnet: ModelRef, strength, body, hands, face, primary_only, fit,
+           layout "coco_wholebody_133", people: [{keypoints: 133 x (x, y, score), primary}],   # the skeleton
+           estimator: {package_version, wire_version, detector: ModelRef, pose: ModelRef} | null,   # argus-puppet
+           control: {sha256, width, height} | null} | null   # the drawing ComfyUI got
   guard
     enforcing_policy, advisory_policies, thinking
     preflight: {policy: GuardResult}
@@ -187,6 +231,7 @@ GenerationRecord (record_version "1.0", wire schema committed)
     age: {source "mivolo", faces: [{age_estimate_years, bbox}], people: [{bbox, age_estimate_years | null, face_index | null}],
           minor_exposed, minor_exposed_rule "frame" | "overlap"} | null   # tool estimate
     input: {scans, nudenet, age, outcome, reason} | null   # the input image's own scan (image-to-image)
+    pose_input: {scans, nudenet, age, outcome, reason} | null   # the pose photo's own scan
   image
     sha256, phash, width, height      # always, including when deleted
     path                              # only when passed or review
@@ -197,7 +242,7 @@ A deleted record has no pixels, thumbnail or preview of any kind; those would be
 ## What it does not do
 
 - **Write anything before the verdict.** No temporary file, no cortex blob or lineage write, no `SaveImage` or `PreviewImage` node. A workflow that contains a node that writes to disk is refused when it is loaded, not when it runs.
-- **Reference images** (IP-Adapter and the like). Each is another picture that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image). An inpainting mask is not a picture, so it needs none: see [Inpainting](#inpainting).
+- **Reference images** (IP-Adapter and the like). Each is another picture that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image). An inpainting mask is not a picture, so it needs none: see [Inpainting](#inpainting). A pose photo has one too, and only its skeleton is rendered from: see [Pose input](#pose-input).
 - **Training, captioning or scoring against a dataset.** Those are forge, lens and proof.
 - **Accept policy text in a request.** Policies are chosen by name only.
 - **Public hosting.** Not planned in the short or medium term. The server binds to localhost by default.
@@ -209,6 +254,7 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
                      record store            Ollama :11434 (optional)
                      output root             SingGuard :9150 (agent-composer)
                                              NudeNet
+                                             argus-puppet :8220 (optional, pose input)
 ```
 
 The package is scaffolded from `argus-pkg-template` with the CLI, server and Dockerfile options on. It has three layers: an engine (pydantic plus cortex, stdlib HTTP for ComfyUI), an optional Typer CLI (`generate`, `preflight`, `serve`, `schema`) and an optional FastAPI server.
@@ -219,7 +265,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
-- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409. With the GPU broker (argus-iris, `ARGUS_GPU_BROKER_URL` set) up to eight run at once, each waiting for its own GPU lease, so a second queues behind iris instead; the caller's `X-Argus-Priority` sets the lease class (`interactive` by default).
+- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `pose_scan` (a pose photo's cells) and `pose` (its skeleton is drawn), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409. With the GPU broker (argus-iris, `ARGUS_GPU_BROKER_URL` set) up to eight run at once, each waiting for its own GPU lease, so a second queues behind iris instead; the caller's `X-Argus-Priority` sets the lease class (`interactive` by default).
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
 - `GET /image/{id}`: ids only, no path input. A deleted, omitted or refused record answers 404 with the record id.
 - `DELETE /record/{id}`: the user removing their own output. This deletes the file; the record stays, marked as removed by the user.
@@ -228,7 +274,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `POST /purge/{id}`: deletes one record and its stored image, with the same confirm body, the same refusal during a generation, and the same 404 without `ARGUS_DARKROOM_DEVMODE=1`. Refused and deleted records are the audit trail, so outside devmode a record can only lose its image, through `DELETE /record/{id}`.
 - `WriteGuard` and `cross_site_refuse` from cortex. CORS allows reads by default; writes are allowed only from the configured origins (`ARGUS_DARKROOM_CORS_ORIGINS`).
 
-**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `DEFAULT_CHECKPOINT` (default `sdxl`: an exact name, or a folder for the first model in it), `WORKFLOW` (a template file for every checkpoint, or a directory of `<family>.json` / `<family>+lora<N>.json` templates, each optionally ending `+img2img` or `+inpaint`, chosen per request by the checkpoint's top-level folder, LoRA count and whether there is an input image and a mask; nothing fitting is a 400, never a substitute), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. The backend URLs are found with cortex's `peers` (darkroom's variable, then the suite-wide `ARGUS_<PEER>_URL`); a malformed one is a configuration error, never "not configured". With no usable SingGuard URL (unset, `off` or malformed) the CLI exits and the server starts closed: it builds no engine and no backend client, `/health` is `degraded` with a failed `singguard` check that names the variables, the records and images already released can be read and removed, and every other route answers 503. Darkroom never runs unguarded.
+**Config** (`ARGUS_DARKROOM_*`): `COMFYUI_URL`, `OLLAMA_URL` (empty turns expansion off), `OLLAMA_MODEL`, `PUPPET_URL` (empty: no pose input), `POSE_CONTROLNET` (the ControlNet a pose input uses by default), `SINGGUARD_URL`, `NUDENET_URL`, `POLICY`, `THINKING` (default `cascade`), `OUTPUT_ROOT`, `MODELS_ROOT`, `DEFAULT_CHECKPOINT` (default `sdxl`: an exact name, or a folder for the first model in it), `WORKFLOW` (a template file for every checkpoint, or a directory of `<family>.json` / `<family>+lora<N>.json` templates, each optionally ending `+img2img` or `+inpaint`, chosen per request by the checkpoint's top-level folder, LoRA count and whether there is an input image and a mask; nothing fitting is a 400, never a substitute), `ALLOW_NSFW`, `DEVMODE`, `READ_ONLY` (403 on every write, `POST /preflight` included, because a pre-flight spends a SingGuard call). Compose maps the `.env` value `DEVMODE=1` to `ARGUS_DARKROOM_DEVMODE`, and the flags are read with cortex's `env_flag`, which warns about a mistyped value instead of silently ignoring it. The backend URLs are found with cortex's `peers` (darkroom's variable, then the suite-wide `ARGUS_<PEER>_URL`); a malformed one is a configuration error, never "not configured". With no usable SingGuard URL (unset, `off` or malformed) the CLI exits and the server starts closed: it builds no engine and no backend client, `/health` is `degraded` with a failed `singguard` check that names the variables, the records and images already released can be read and removed, and every other route answers 503. Darkroom never runs unguarded.
 
 **Store:** one flat `<id>.json` per record, the same pattern as curator's `ScanStore`. Images go under `<output_root>/<id>.png`.
 
@@ -242,6 +288,7 @@ No real sexual, violent or illegal content goes in the repo or the tests.
 - A test that a deleted or omitted outcome leaves no bytes anywhere: the output root, the system temp directory and the fake ComfyUI history. The test lists all three before and after.
 - A test that a workflow containing a disk-writing node is refused at load.
 - Image-to-image: an input refused for each reason (illegal, flagged under SFW, exposed under SFW, minor-exposed, SingGuard or NudeNet unreachable) reaches no part of ComfyUI and leaves no bytes, listed as above; a text refusal comes first and the input is never scanned.
+- Pose input, against a fake argus-puppet: a photo refused for each reason reaches neither puppet nor ComfyUI and leaves no bytes; a passed photo's bytes are in nothing ComfyUI receives; a drawing that is a picture, the wrong size or blank, keypoints from another frame, a redirect and every puppet error fail the run before ComfyUI; a request with a control image or keypoints of its own is refused.
 - Inpainting: the input is scanned exactly as for image-to-image and the mask reaches no guard; a refused input with a mask reaches no part of ComfyUI and the mask's bytes are in no file; a mask of the wrong size, that does not decode, or that masks nothing is a 400 before any check.
 - Mode tests:
   - `default` and `sfw-*` names are SFW, and everything else is NSFW.

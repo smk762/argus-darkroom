@@ -11,15 +11,18 @@ works here once its ``SaveImage`` is swapped for ``SaveImageWebsocket``:
 * image-to-image: ``$init_image`` (the checked input, as base64, the ``image`` input of the one
   ``DarkroomLoadImageBase64`` node) and ``$denoise``. A template has both or neither;
 * inpainting: those two and ``$init_mask`` (the mask, as base64, the ``mask`` input of the one
-  ``DarkroomLoadMaskBase64`` node). A template with ``$init_mask`` is an inpainting template.
+  ``DarkroomLoadMaskBase64`` node). A template with ``$init_mask`` is an inpainting template;
+* pose: ``$pose_image`` (the skeleton argus-puppet drew from a checked photo, as base64, the ``image`` input of the
+  one ``DarkroomLoadImageBase64`` node), ``$controlnet`` (the ControlNet file) and ``$pose_strength``. A template has
+  all three or none, and a pose template takes no ``$init_image``.
 
 Only a value that is exactly a placeholder is replaced, so a prompt is never interpolated into other text and
 ints and floats stay typed.
 
 **One template or a set.** ``ARGUS_DARKROOM_WORKFLOW`` names a file, used for every checkpoint, or a directory of
-``<family>[+lora<N>][+img2img|+inpaint].json`` files (:func:`load_workflows`). A run then gets the template for its
+``<family>[+lora<N>][+img2img|+inpaint|+pose].json`` files (:func:`load_workflows`). A run then gets the template for its
 checkpoint's family (the checkpoint's top-level folder under ``checkpoints/``), its number of LoRAs and its mode (text-
-to-image, image-to-image, or inpainting when the input has a mask), or a :class:`WorkflowError` when there is none:
+to-image, image-to-image, inpainting when the input has a mask, or pose when the request has a pose input), or a :class:`WorkflowError` when there is none:
 never a template made for another family, LoRA count or mode.
 
 **Nothing is written before the verdict.** The one output node is ``SaveImageWebsocket``, which sends the
@@ -29,7 +32,8 @@ image over the websocket and writes nothing. A template with any other node that
 **Every input image is checked.** The only way an image gets into a run is ``$init_image``, which darkroom fills
 with an input it has scanned. A node that loads an image from ComfyUI's own disk (``LoadImage`` and the like) would
 bring in one nobody checked, so it is refused at load too. An inpainting mask is not checked: it selects a region of
-the checked input and carries no imagery of its own.
+the checked input and carries no imagery of its own. A pose template's ``$pose_image`` is filled with a skeleton
+drawing, never the pose photo: the photo is checked like any input, and only its keypoints go on.
 """
 
 from __future__ import annotations
@@ -54,10 +58,19 @@ DENOISE = "$denoise"
 # The inpainting mask loader (same file): base64 in, MASK out, no disk.
 MASK_LOADER_NODE = "DarkroomLoadMaskBase64"
 INIT_MASK = "$init_mask"
+# Pose conditioning: the skeleton drawing (through LOADER_NODE), the ControlNet file and its strength.
+POSE_IMAGE = "$pose_image"
+POSE_STRENGTH = "$pose_strength"
+CONTROLNET = "$controlnet"
 
-Mode = Literal["txt2img", "img2img", "inpaint"]
+Mode = Literal["txt2img", "img2img", "inpaint", "pose"]
 MODES: tuple[Mode, ...] = get_args(Mode)
-_MODE_KIND = {"txt2img": "workflow", "img2img": "image-to-image workflow", "inpaint": "inpainting workflow"}
+_MODE_KIND = {
+    "txt2img": "workflow",
+    "img2img": "image-to-image workflow",
+    "inpaint": "inpainting workflow",
+    "pose": "pose workflow",
+}
 
 # Any node whose class name says it saves, previews, exports or writes is refused. That covers ComfyUI's own
 # (SaveImage, PreviewImage, SaveAnimatedWEBP, SaveLatent, SaveVideo, ...) and custom nodes that follow the usual
@@ -67,7 +80,7 @@ _WRITING_WORDS = ("save", "preview", "export", "write")
 
 _LORA = re.compile(r"^\$lora(?:_(\d+))?(_weight)?$")
 # A file in a workflow directory: ``sdxl.json``, ``sdxl+lora1.json``, ``flux-klein.json``.
-_SET_MEMBER = re.compile(r"^(?P<family>[^+/]+?)(?:\+lora(?P<loras>[1-9]\d*))?(?:\+(?P<mode>img2img|inpaint))?$")
+_SET_MEMBER = re.compile(r"^(?P<family>[^+/]+?)(?:\+lora(?P<loras>[1-9]\d*))?(?:\+(?P<mode>img2img|inpaint|pose))?$")
 
 
 class WorkflowError(ValueError):
@@ -108,7 +121,8 @@ class Workflow:
     # The scalar placeholders it fills, so a client can tell which request values it uses.
     slots: frozenset[str] = frozenset()
     # txt2img; img2img: it renders from an input image ($init_image, $denoise); inpaint: from an input image and a
-    # mask ($init_mask too).
+    # mask ($init_mask too); pose: text-to-image steered by a pose ControlNet ($pose_image, $controlnet,
+    # $pose_strength).
     mode: Mode = "txt2img"
 
     @property
@@ -189,11 +203,19 @@ class RenderParams:
     denoise: float | None = None
     # Inpainting: the mask as base64. None otherwise.
     init_mask: str | None = None
+    # Pose: the skeleton drawing as base64, the ControlNet's name and its strength. None otherwise.
+    pose_image: str | None = None
+    controlnet: str | None = None
+    pose_strength: float | None = None
 
     def __repr__(self) -> str:  # never the input's pixels, in a log or a traceback
         init = None if self.init_image is None else f"<{len(self.init_image)} base64 chars>"
         mask = None if self.init_mask is None else f"<{len(self.init_mask)} base64 chars>"
-        return f"RenderParams(seed={self.seed}, checkpoint={self.checkpoint!r}, init_image={init}, init_mask={mask})"
+        pose = None if self.pose_image is None else f"<{len(self.pose_image)} base64 chars>"
+        return (
+            f"RenderParams(seed={self.seed}, checkpoint={self.checkpoint!r}, init_image={init}, init_mask={mask}, "
+            f"pose_image={pose})"
+        )
 
 
 def template_sha256(template: dict) -> str:
@@ -224,7 +246,7 @@ def parse_workflow(
         if loads_unchecked_image(class_type):
             raise WorkflowError(
                 f"{source}: node {node_id!r} ({class_type}) loads an image darkroom never checked. An input image "
-                f"reaches a run only through {LOADER_NODE} and {INIT_IMAGE}"
+                f"reaches a run only through {LOADER_NODE} and {INIT_IMAGE} (or {POSE_IMAGE}, a pose skeleton)"
             )
         if class_type == SAVE_NODE:
             save_ids.append(str(node_id))
@@ -282,7 +304,27 @@ def _check_input_slots(
     :data:`MASK_LOADER_NODE`, whose ``mask`` is ``$init_mask``, the only one. A text-to-image template has none of
     these slots and no loader (a loader with a fixed image would bring in one nobody checked); only an inpainting
     template has a mask loader.
+
+    A pose template has exactly one :data:`LOADER_NODE`, whose ``image`` is ``$pose_image``, the only one, with a
+    ``$controlnet`` and a ``$pose_strength``, and none of the image-to-image slots: the one loader carries the
+    skeleton, so there is no second way in for a picture.
     """
+    pose_slots = {POSE_IMAGE, CONTROLNET, POSE_STRENGTH} & placeholders
+    if pose_slots:
+        if len(pose_slots) != 3:
+            raise WorkflowError(
+                f"{source}: a pose template needs {POSE_IMAGE}, {CONTROLNET} and {POSE_STRENGTH} together"
+            )
+        if {INIT_IMAGE, INIT_MASK, DENOISE} & placeholders or mask_loader_ids:
+            raise WorkflowError(
+                f"{source}: a pose template takes no {INIT_IMAGE}, {INIT_MASK} or {DENOISE}: pose conditioning is "
+                "text-to-image"
+            )
+        if len(loader_ids) != 1:
+            raise WorkflowError(f"{source}: a pose template needs exactly one {LOADER_NODE} (found {len(loader_ids)})")
+        if _uses(template, POSE_IMAGE) != [(loader_ids[0], "image")]:
+            raise WorkflowError(f"{source}: {POSE_IMAGE} must appear once, as the image of the {LOADER_NODE} node")
+        return "pose"
     if INIT_MASK in placeholders:
         if len(mask_loader_ids) != 1:
             raise WorkflowError(
@@ -325,8 +367,9 @@ def load_workflow(path: str | Path, family: str | None = None) -> Workflow:
     Refused: any node that writes to disk (``SaveImage``, ``PreviewImage``, other ``Save*`` / ``*Preview*`` /
     ``*Export*`` / ``*Write*`` nodes), any node that loads an image other than :data:`LOADER_NODE`, no
     :data:`SAVE_NODE` or more than one, a template with no ``$positive`` slot, LoRA slots with a gap or a name without
-    its weight, image-to-image slots that are not exactly one loader with ``$init_image`` and a ``$denoise``, and
-    inpainting slots that are not those plus exactly one mask loader with ``$init_mask``.
+    its weight, image-to-image slots that are not exactly one loader with ``$init_image`` and a ``$denoise``,
+    inpainting slots that are not those plus exactly one mask loader with ``$init_mask``, and pose slots that are not
+    exactly one loader with ``$pose_image``, a ``$controlnet`` and a ``$pose_strength``.
     """
     path = Path(path)
     try:
@@ -340,8 +383,8 @@ def load_workflows(path: str | Path) -> WorkflowSet:
     """A single template for every checkpoint (*path* is a file), or the set in a directory.
 
     In a directory each ``*.json`` must be named ``<family>.json`` (no LoRA slots) or ``<family>+lora<N>.json``
-    (exactly N), with ``+img2img`` at the end for an image-to-image template and ``+inpaint`` for an inpainting one
-    (and only for those), and every one must load: a misnamed or broken template refuses the whole set, not just
+    (exactly N), with ``+img2img`` at the end for an image-to-image template, ``+inpaint`` for an inpainting one and
+    ``+pose`` for a pose one (and only for those), and every one must load: a misnamed or broken template refuses the whole set, not just
     itself.
     Other files are ignored, and so are hidden ones (``._flux.json``, which macOS leaves on a mounted volume).
     """
@@ -355,8 +398,8 @@ def load_workflows(path: str | Path) -> WorkflowSet:
         match = _SET_MEMBER.fullmatch(file.stem)
         if match is None:
             raise WorkflowError(
-                f"{file}: a workflow in a directory is named <family>.json or <family>+lora<N>.json, with +img2img "
-                "or +inpaint at the end for an image-to-image or inpainting one"
+                f"{file}: a workflow in a directory is named <family>.json or <family>+lora<N>.json, with +img2img, "
+                "+inpaint or +pose at the end for an image-to-image, inpainting or pose one"
             )
         workflow = load_workflow(file, family=match.group("family"))
         expected = int(match.group("loras") or 0)
@@ -368,11 +411,13 @@ def load_workflows(path: str | Path) -> WorkflowSet:
                 "txt2img": f"has no {INIT_IMAGE}",
                 "img2img": f"has {INIT_IMAGE} and no {INIT_MASK}",
                 "inpaint": f"has {INIT_MASK}",
+                "pose": f"has {POSE_IMAGE}",
             }[workflow.mode]
             says = {
-                "txt2img": "says neither +img2img nor +inpaint",
+                "txt2img": "says neither +img2img, +inpaint nor +pose",
                 "img2img": "says image-to-image (+img2img)",
                 "inpaint": "says inpainting (+inpaint)",
+                "pose": "says pose (+pose)",
             }[named]
             raise WorkflowError(f"{file} {has} but its name {says}")
         found.append(workflow)
@@ -409,6 +454,9 @@ _SCALAR_VALUES: dict[str, Callable[[RenderParams], object]] = {
     INIT_IMAGE: lambda p: p.init_image,
     DENOISE: lambda p: p.denoise,
     INIT_MASK: lambda p: p.init_mask,
+    POSE_IMAGE: lambda p: p.pose_image,
+    CONTROLNET: lambda p: p.controlnet,
+    POSE_STRENGTH: lambda p: p.pose_strength,
 }
 
 
@@ -469,6 +517,8 @@ def render(workflow: Workflow, params: RenderParams) -> dict:
         raise WorkflowError(f"this run has an input image but the workflow has no {INIT_IMAGE} slot")
     if params.init_mask is not None and INIT_MASK not in seen:
         raise WorkflowError(f"this run has a mask but the workflow has no {INIT_MASK} slot")
+    if params.pose_image is not None and POSE_IMAGE not in seen:
+        raise WorkflowError(f"this run has a pose input but the workflow has no {POSE_IMAGE} slot")
     if params.denoise is not None and DENOISE not in seen:
         raise WorkflowError(f"this run sets denoise but the workflow has no {DENOISE} slot")
     if params.vae is not None and "$vae" not in seen:

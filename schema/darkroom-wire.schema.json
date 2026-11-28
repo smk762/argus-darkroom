@@ -83,6 +83,34 @@
       "title": "Cell",
       "type": "object"
     },
+    "ControlImageRef": {
+      "description": "The identity of the skeleton drawing ComfyUI got: the PNG's sha256 (re-encoded with no metadata) and size.",
+      "properties": {
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "width",
+        "height"
+      ],
+      "title": "ControlImageRef",
+      "type": "object"
+    },
     "DepthRecord": {
       "description": "A depth map derived from the record's stored image (``POST /depth/{id}``), never from a new prompt.\n\nThe PNG is 8-bit greyscale at the image's size, near bright (255) and far dark (0), stretched min to max per image,\nwith no metadata. ``sha256`` is of the stored PNG's bytes. ``workflow`` names darkroom's built-in depth graph.",
       "properties": {
@@ -346,6 +374,17 @@
           ],
           "default": null
         },
+        "pose_input": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InputScanRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "preflight": {
           "additionalProperties": {
             "$ref": "#/$defs/Cell"
@@ -536,7 +575,7 @@
       "type": "object"
     },
     "InputScanRecord": {
-      "description": "The image-to-image input's own scan: the same checks an output gets, before anything reaches ComfyUI.\n\nThe input goes on only when ``outcome`` is ``passed``; anything else refuses the attempt. ``outcome`` and\n``reason`` are what the outcome table said of the input, as if it were an output.",
+      "description": "An input image's own scan (the image-to-image input, or a pose photo): the same checks an output gets, before\nanything reaches ComfyUI or argus-puppet.\n\nThe input goes on only when ``outcome`` is ``passed``; anything else refuses the attempt. ``outcome`` and\n``reason`` are what the outcome table said of the input, as if it were an output.",
       "properties": {
         "age": {
           "anyOf": [
@@ -837,6 +876,204 @@
       "title": "PersonAge",
       "type": "object"
     },
+    "PoseEstimatorRef": {
+      "description": "What read the keypoints: argus-puppet's version and its two pinned models, as it reported them.",
+      "properties": {
+        "detector": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "package_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Package Version"
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "wire_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wire Version"
+        }
+      },
+      "title": "PoseEstimatorRef",
+      "type": "object"
+    },
+    "PosePerson": {
+      "description": "One person of the pose skeleton: argus-puppet's whole-body keypoints, never pixels.",
+      "properties": {
+        "keypoints": {
+          "items": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array"
+          },
+          "maxItems": 133,
+          "minItems": 133,
+          "title": "Keypoints",
+          "type": "array"
+        },
+        "primary": {
+          "default": false,
+          "title": "Primary",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "keypoints"
+      ],
+      "title": "PosePerson",
+      "type": "object"
+    },
+    "PoseRef": {
+      "description": "A pose input: the identity of the photo the pose came from, never its pixels, and the skeleton read from it.\n\nThe hashes and size are of the photo as darkroom judged it and sent it to argus-puppet: decoded, turned upright,\nmade RGB and re-encoded as a PNG with no metadata. ``source_sha256`` is of the bytes the caller sent. The photo\nreaches no part of ComfyUI: only the skeleton drawn from ``people`` does (``control``).\n\n``people``, ``estimator`` and ``control`` are filled once the photo passed its scan and argus-puppet answered;\non a record refused or failed before that they are empty and null.",
+      "properties": {
+        "body": {
+          "default": true,
+          "title": "Body",
+          "type": "boolean"
+        },
+        "control": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ControlImageRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "controlnet": {
+          "$ref": "#/$defs/ModelRef"
+        },
+        "estimator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseEstimatorRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "face": {
+          "default": true,
+          "title": "Face",
+          "type": "boolean"
+        },
+        "fit": {
+          "default": "contain",
+          "title": "Fit",
+          "type": "string"
+        },
+        "hands": {
+          "default": true,
+          "title": "Hands",
+          "type": "boolean"
+        },
+        "height": {
+          "exclusiveMinimum": 0,
+          "title": "Height",
+          "type": "integer"
+        },
+        "layout": {
+          "default": "coco_wholebody_133",
+          "title": "Layout",
+          "type": "string"
+        },
+        "people": {
+          "items": {
+            "$ref": "#/$defs/PosePerson"
+          },
+          "title": "People",
+          "type": "array"
+        },
+        "phash": {
+          "title": "Phash",
+          "type": "string"
+        },
+        "primary_only": {
+          "default": false,
+          "title": "Primary Only",
+          "type": "boolean"
+        },
+        "sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "source_sha256": {
+          "description": "lowercase hex SHA256 digest",
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Source Sha256",
+          "type": "string"
+        },
+        "strength": {
+          "title": "Strength",
+          "type": "number"
+        },
+        "width": {
+          "exclusiveMinimum": 0,
+          "title": "Width",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sha256",
+        "phash",
+        "width",
+        "height",
+        "source_sha256",
+        "controlnet",
+        "strength"
+      ],
+      "title": "PoseRef",
+      "type": "object"
+    },
     "RequestRecord": {
       "description": "What was asked for. ``final_prompt`` is the exact string ComfyUI receives.",
       "properties": {
@@ -926,6 +1163,17 @@
           "default": "",
           "title": "Negative Prompt",
           "type": "string"
+        },
+        "pose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "sampling": {
           "anyOf": [

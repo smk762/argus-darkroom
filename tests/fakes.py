@@ -6,6 +6,7 @@ canned answer for a harmless marker string, never from the content of a prompt o
 
 from __future__ import annotations
 
+import io
 import json
 import threading
 import urllib.parse
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from argus_cortex.moderation import policies as policy_table
+from PIL import Image
 
 # {"input", "input_role", "image_base64"?, "policy"?, "thinking"} -> (status, answer)
 Responder = Callable[[dict], tuple[int, dict]]
@@ -344,6 +346,135 @@ class FakeIris:
         self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
 
     def __enter__(self) -> FakeIris:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def skeleton_png(size: tuple[int, int], dots: int = 6) -> bytes:
+    """A stand-in for puppet's drawing: black, with a few flat-colour squares. Nothing in it but colour."""
+    image = Image.new("RGB", size, (0, 0, 0))
+    for i in range(dots):
+        colour = (255, 40 * i, 255 - 40 * i)
+        x, y = (3 + 5 * i) % max(size[0] - 3, 1), (2 + 7 * i) % max(size[1] - 3, 1)
+        for dx in range(3):
+            for dy in range(3):
+                image.putpixel((min(x + dx, size[0] - 1), min(y + dy, size[1] - 1)), colour)
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def person(x: float = 10.0, primary: bool = False) -> dict:
+    """One person as puppet's ``PoseResult`` lists them: 133 (x, y, score) points. The numbers mean nothing."""
+    return {
+        "bbox": [x, 1.0, 20.0, 30.0],
+        "det_score": 0.9,
+        "primary": primary,
+        "keypoints": [[x + i * 0.1, 2.0 + i * 0.2, 0.9] for i in range(133)],
+        "part_scores": {"body": 0.9, "feet": 0.9, "face": 0.9, "left_hand": 0.9, "right_hand": 0.9},
+    }
+
+
+class FakePuppet:
+    """argus-puppet's ``GET /health``, ``POST /pose`` and ``POST /render``, on a real socket.
+
+    ``/pose`` answers a ``PoseResult`` for the posted image with *people*; ``/render`` answers *drawing* (bytes), or a
+    stand-in skeleton of the canvas the request asks for. Every call is kept in order (``calls``), with the bodies
+    (``posed``: the images; ``renders``: the JSON).
+    """
+
+    DETECTOR = {"name": "yolox_m", "sha256": "a" * 64, "license": "Apache-2.0", "bytes": 1}
+    POSE = {"name": "dwpose-l-384x288", "sha256": "b" * 64, "license": "Apache-2.0", "bytes": 1}
+
+    def __init__(self, people: list[dict] | None = None) -> None:
+        self.people = [person(primary=True)] if people is None else people
+        self.drawing: bytes | None = None
+        self.pose_status = 200
+        self.render_status = 200
+        self.pose_answer: object | None = None  # sent instead of the PoseResult when set
+        self.frame: tuple[int, int] | None = None  # the size /pose reports; default: the posted image's
+        self.redirect_to: str | None = None
+        self.calls: list[str] = []
+        self.posed: list[bytes] = []
+        self.renders: list[dict] = []
+        self.headers: list[dict[str, str]] = []
+        self.on_call: Callable[[str], None] | None = None
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send(self, status: int, data: bytes, content_type: str = "application/json") -> None:
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                if fake.redirect_to and 300 <= status < 400:
+                    self.send_header("Location", fake.redirect_to)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                fake.calls.append("GET " + self.path)
+                self._send(200, b'{"status": "ok"}')
+
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                path = urllib.parse.urlsplit(self.path).path
+                fake.calls.append("POST " + path)
+                fake.headers.append({k.lower(): v for k, v in self.headers.items()})
+                if fake.on_call:
+                    fake.on_call(path)
+                if fake.redirect_to:
+                    self._send(307, b"")
+                elif path == "/pose":
+                    fake.posed.append(body)
+                    if fake.pose_status != 200:
+                        self._send(fake.pose_status, b'{"detail": "no"}')
+                        return
+                    width, height = fake.frame or Image.open(io.BytesIO(body)).size
+                    answer = fake.pose_answer or {
+                        "puppet_version": "1.3",
+                        "image": "pose.png",
+                        "image_sha256": "c" * 64,
+                        "width": width,
+                        "height": height,
+                        "layout": "coco_wholebody_133",
+                        "people": fake.people,
+                        "primary": next((i for i, p in enumerate(fake.people) if p.get("primary")), None),
+                        "estimator": {
+                            "name": "topdown",
+                            "layout": "coco_wholebody_133",
+                            "detector": fake.DETECTOR,
+                            "pose": fake.POSE,
+                            "provider": "CPUExecutionProvider",
+                            "package_version": "0.4.0",
+                            "det_threshold": 0.5,
+                            "nms_iou": 0.45,
+                        },
+                    }
+                    self._send(200, json.dumps(answer).encode())
+                elif path == "/render":
+                    request = json.loads(body)
+                    fake.renders.append(request)
+                    if fake.render_status != 200:
+                        self._send(fake.render_status, b'{"detail": "no"}')
+                        return
+                    options = request["options"]
+                    drawing = fake.drawing or skeleton_png((options["width"], options["height"]))
+                    self._send(200, drawing, "image/png")
+                else:
+                    self._send(404, b"{}")
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+
+    def __enter__(self) -> FakePuppet:
         self._thread.start()
         return self
 

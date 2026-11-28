@@ -3,6 +3,9 @@
 Also the image-to-image input: decoded from the request's base64 once, into the one PNG that is both judged and sent
 to ComfyUI, so what was checked is exactly what is rendered from. And the inpainting mask, decoded the same way into a
 black-and-white PNG; it selects a region and carries no imagery, so it is never scanned.
+
+And the pose control image: the skeleton argus-puppet drew from a checked photo's keypoints. It is checked to be a
+drawing (the generation's size, a handful of flat colours), never a photograph.
 """
 
 from __future__ import annotations
@@ -110,15 +113,15 @@ def _decode_upright(data_base64: str, what: str) -> tuple[Image.Image, str]:
     return upright, hashlib.sha256(data).hexdigest()
 
 
-def load_input(data_base64: str) -> InputImage:
-    """Decode an image-to-image input from base64. Raises :class:`UnreadableImage` with the reason it is refused:
-    not base64, over :data:`MAX_INPUT_BYTES` decoded, not a PNG, JPEG or WebP, an edge over :data:`MAX_INPUT_EDGE`,
-    or pixels that do not decode."""
-    upright, source_sha256 = _decode_upright(data_base64, "the init image")
+def load_input(data_base64: str, what: str = "the init image") -> InputImage:
+    """Decode an input image (*what*: "the init image", "the pose image") from base64. Raises
+    :class:`UnreadableImage` with the reason it is refused: not base64, over :data:`MAX_INPUT_BYTES` decoded, not a
+    PNG, JPEG or WebP, an edge over :data:`MAX_INPUT_EDGE`, or pixels that do not decode."""
+    upright, source_sha256 = _decode_upright(data_base64, what)
     try:
         rgb = upright.convert("RGB")
     except Exception as exc:
-        raise UnreadableImage(f"the init image cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
+        raise UnreadableImage(f"{what} cannot be decoded as PNG, JPEG or WebP: {exc}") from exc
     buf = io.BytesIO()
     rgb.save(buf, "PNG")
     png = buf.getvalue()
@@ -185,3 +188,62 @@ def load_mask(data_base64: str, size: tuple[int, int]) -> InputMask:
         # Never 0 once something is masked: a few pixels of a large mask would otherwise round to "masks nothing".
         masked_fraction=max(round(masked / (binary.width * binary.height), 4), 0.0001),
     )
+
+
+# The OpenPose convention draws with about sixty flat colours (17 dimmed limbs, 18 joints, 20 hand edges, the hand and
+# face dots, black), however many people are drawn. A photograph has thousands.
+MAX_CONTROL_COLOURS = 256
+
+
+@dataclass(frozen=True)
+class ControlImage:
+    """A pose control image, held in memory only: the skeleton argus-puppet drew from a checked photo's keypoints.
+
+    *png* is what ComfyUI gets: decoded, made RGB and re-encoded as a PNG with no metadata. It was checked to be a
+    drawing and not a picture (see :func:`load_control`), and it is not scanned: it holds joint positions and nothing
+    of the photo's appearance. The photo it came from is what the guards judged.
+    """
+
+    png: bytes
+    sha256: str
+    width: int
+    height: int
+
+    def __repr__(self) -> str:
+        return f"ControlImage(sha256={self.sha256}, {self.width}x{self.height})"
+
+    @cached_property  # encoded once, like InputImage.base64
+    def base64(self) -> str:
+        return base64.b64encode(self.png).decode("ascii")
+
+
+def load_control(data: bytes, size: tuple[int, int]) -> ControlImage:
+    """Check the control image argus-puppet answered with, for a generation of *size*.
+
+    Raises :class:`UnreadableImage` unless it is a PNG of exactly *size* that looks like a skeleton drawing: at most
+    :data:`MAX_CONTROL_COLOURS` distinct colours (a photograph, which nothing checked, has far more) and not one flat
+    colour (nothing was drawn, so the ControlNet would steer towards nobody).
+    """
+    try:
+        with Image.open(io.BytesIO(data), formats=("PNG",)) as img:
+            if img.size != size:
+                raise UnreadableImage(
+                    f"the pose control image is {img.width}x{img.height} but the generation is {size[0]}x{size[1]}"
+                )
+            img.load()
+            rgb = img.convert("RGB")
+    except UnreadableImage:
+        raise
+    except Exception as exc:
+        raise UnreadableImage(f"the pose control image cannot be decoded as a PNG: {exc}") from exc
+    colours = rgb.getcolors(MAX_CONTROL_COLOURS)
+    if colours is None:
+        raise UnreadableImage(
+            f"the pose control image has more than {MAX_CONTROL_COLOURS} colours: it is not a skeleton drawing"
+        )
+    if len(colours) < 2:
+        raise UnreadableImage("the pose control image is blank: no part of the pose could be drawn")
+    buf = io.BytesIO()
+    rgb.save(buf, "PNG")
+    png = buf.getvalue()
+    return ControlImage(png=png, sha256=hashlib.sha256(png).hexdigest(), width=rgb.width, height=rgb.height)

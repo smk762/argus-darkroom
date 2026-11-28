@@ -29,6 +29,9 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
    before anything reaches ComfyUI. It goes on only if its outcome is `passed`; anything else, a check that could not
    run included, refuses the attempt with `outcome_reason` `input image: <reason>`. The input is never written to disk.
    An inpainting mask is not scanned: it only selects which pixels are repainted (see [Inpainting](#inpainting)).
+   A **pose photo** (`pose`) is an input image too: the same checks, and `pose image: <reason>` when it is refused.
+   Once it has passed, argus-puppet reads its keypoints and draws the skeleton; only that drawing reaches ComfyUI
+   (see [Pose input](#pose-input)).
 4. **Render** through ComfyUI. The image comes back over the websocket and is held in memory only.
 5. **Scan**: per policy, SingGuard judges the image alone and with the prompt. NudeNet scores exposure. If the age check
    is installed, MiVOLO estimates an age per face.
@@ -37,12 +40,12 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
 
 | Outcome | Means |
 |---|---|
-| `refused` | pre-flight, or the input image's scan, stopped it; nothing was rendered |
+| `refused` | pre-flight, or the scan of an input image or pose photo, stopped it; nothing was rendered |
 | `passed` | every cell safe |
 | `review` | some cell flagged; the image is kept and served behind its shield |
 | `deleted` | an illegal rule in any policy, `minor-exposed`, or an enforcing check that could not run |
 | `omitted` | SFW only: NudeNet saw exposure, or did not answer |
-| `failed` | expansion or generation failed, or the render came back blank; no image |
+| `failed` | expansion or generation failed, the render came back blank, or a pose could not be read or drawn (`pose: <why>`); no image |
 
 Nothing is written before the verdict: no temp file, no `SaveImage` node. A workflow containing a node that saves,
 previews, exports or writes is refused when it is loaded.
@@ -54,8 +57,9 @@ under-18 estimate with exposure deletes the image. The age check is an extra sig
 
 You need the services darkroom reaches by URL:
 
-- **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image and inpainting the `DarkroomLoadImageBase64`
-  and `DarkroomLoadMaskBase64` nodes (below).
+- **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image, inpainting and pose input the
+  `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64` nodes (below).
+- **argus-puppet**, optional, for [pose input](#pose-input): it reads a pose photo's keypoints and draws the skeleton.
 - **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and with no
   SingGuard URL (`ARGUS_DARKROOM_SINGGUARD_URL`, or the suite-wide `ARGUS_SINGGUARD_URL`) nothing is generated: the
   server starts closed (see [Without SingGuard](#without-singguard)) and the CLI exits 1.
@@ -108,8 +112,9 @@ repo: [`comfyui/darkroom_load_image_base64.py`](comfyui/darkroom_load_image_base
 decodes the image in memory and outputs an `IMAGE`; `DarkroomLoadMaskBase64`, in the same file, does the same for an
 inpainting mask and outputs a `MASK` (1.0 where the image is repainted). Neither reads or writes a file, and neither is
 an output node. The graph, and the input and mask in it, is deleted from ComfyUI's history after every run, like the
-prompt. Install the file only if you use image-to-image or inpainting (if you installed it for image-to-image, copy it
-again: the mask node is new):
+prompt. A pose input's skeleton drawing travels through `DarkroomLoadImageBase64` the same way. Install the file only
+if you use image-to-image, inpainting or pose input (if you installed it for image-to-image, copy it again: the mask
+node is new):
 
 ```bash
 cp comfyui/darkroom_load_image_base64.py /path/to/ComfyUI/custom_nodes/
@@ -146,7 +151,7 @@ A template is a ComfyUI API-format workflow with `$placeholders`: `$base_checkpo
 `$seed`, `$steps`, `$cfg`, `$guidance`, `$sampler`, `$scheduler`, `$width`, `$height`, `$clip_skip`, and `$lora` /
 `$lora_weight`, `$lora_2` / `$lora_2_weight` and so on. It must contain exactly one `SaveImageWebsocket` node and no
 other node that saves, and a `$positive` slot. No node may load an image (`LoadImage` and the like): an image reaches a
-run only as an image-to-image input, which darkroom checks first.
+run only as an image-to-image input, which darkroom checks first, or as the skeleton drawn from a checked pose photo.
 
 An **image-to-image** template has `$init_image`, as the `image` of exactly one `DarkroomLoadImageBase64` node, and
 `$denoise`; a text-to-image template has neither. The examples feed the loader through `ImageScale` (lanczos, to
@@ -159,17 +164,26 @@ corners), give it to the sampler with `SetLatentNoiseMask` on the encoded input,
 `ImageCompositeMasked`: the decoded result over the scaled input, through the grown mask, so every pixel outside it is
 exactly the input's.
 
+A **pose** template has `$pose_image`, as the `image` of exactly one `DarkroomLoadImageBase64` node, with
+`$controlnet` (a `ControlNetLoader`'s `control_net_name`) and `$pose_strength`: all three or none. It takes no
+`$init_image`, `$init_mask` or `$denoise`: pose conditioning is text-to-image for now. The examples load the ControlNet
+and put a `ControlNetApplyAdvanced` between the two prompts and the `KSampler`. `$pose_image` is filled with the
+skeleton argus-puppet drew at `$width` x `$height`, so the template needs no preprocessor and no scaling.
+
 `WORKFLOW` names a file or a directory:
 
 - **A directory** holds one template per checkpoint family, LoRA count and mode, named `<family>.json` (no LoRA slots)
   or `<family>+lora<N>.json` (exactly N), with `+img2img` at the end for an image-to-image template
-  (`sdxl+lora1+img2img.json`) or `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`). A checkpoint's
+  (`sdxl+lora1+img2img.json`), `+inpaint` for an inpainting one (`sdxl+lora1+inpaint.json`) or `+pose` for a pose one
+  (`sdxl+lora1+pose.json`). A checkpoint's
   family is its top-level folder under `checkpoints/`, so `sdxl/juggernaut.safetensors` with two LoRAs renders with `sdxl+lora2.json`. When nothing fits, including a
-  checkpoint outside a family folder, an input image with no `+img2img` template or a mask with no `+inpaint` one, the
+  checkpoint outside a family folder, an input image with no `+img2img` template, a mask with no `+inpaint` one or a
+  pose input with no `+pose` one, the
   request is a 400. Darkroom never falls back to another family's template, LoRA count or mode. A misnamed or broken
-  file, or one whose name and `$init_image` / `$init_mask` slots disagree, stops the server from starting.
+  file, or one whose name and `$init_image` / `$init_mask` / `$pose_image` slots disagree, stops the server from
+  starting.
 - **A file** is used for every checkpoint, as before. Every run must then fill its LoRA slots exactly, and be of the
-  file's mode: text-to-image, image-to-image or inpainting.
+  file's mode: text-to-image, image-to-image, inpainting or pose.
 
 A template never silently drops a value the request sets. A request is a 400 if it sets something the chosen template
 has no slot for: a negative prompt (Flux takes none), `guidance`, or a `clip_skip` above 2. `/models` lists each
@@ -180,7 +194,7 @@ none). Records name the template in `request.workflow`, beside `workflow_sha256`
 
 | Family | Files | Sampling |
 |---|---|---|
-| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
+| `sdxl` | `sdxl`, `sdxl+lora1`, `sdxl+lora2`; image-to-image `sdxl+img2img`, `sdxl+lora1+img2img`; inpainting `sdxl+inpaint`, `sdxl+lora1+inpaint`, `sdxl+lora2+inpaint`; pose `sdxl+pose`, `sdxl+lora1+pose` | the usual: a negative prompt, `cfg` around 5, `clip_skip` |
 | `flux` | `flux`, `flux+lora1`, `flux+lora2` | `guidance` (around 3.5 for dev), `cfg` 1, `simple` or `beta`, no negative prompt. Schnell: about 4 steps |
 | `flux-klein` | `flux-klein` | FLUX.2 Klein 9B (distilled): `cfg` 1, about 4 steps, no negative prompt |
 | `sd35` | `sd35` | SD3.5 Large: a negative prompt, `cfg` around 4, `euler` with `sgm_uniform` |
@@ -195,7 +209,7 @@ conditions on, and `n` above 2 sends `-n`. A request may ask for 1 to 12.
 
 ## Configuration
 
-All settings are `ARGUS_DARKROOM_*` environment variables. The five backend URLs also have a suite-wide name, shared
+All settings are `ARGUS_DARKROOM_*` environment variables. The six backend URLs also have a suite-wide name, shared
 by every Argus service on the host (see [Shared settings](#shared-settings-the-suite-file)).
 
 | Variable | Default | |
@@ -206,11 +220,13 @@ by every Argus service on the host (see [Shared settings](#shared-settings-the-s
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra; where that cannot run, `ARGUS_CURATOR_URL`; else no age check. |
 | `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. Unset, the URL is `ARGUS_OLLAMA_URL`. |
+| `PUPPET_URL` | | argus-puppet, which reads a pose photo and draws its skeleton. Unset: `ARGUS_PUPPET_URL`. Neither: a request with a `pose` input is a 400. |
+| `POSE_CONTROLNET` | | The ControlNet a pose input uses when the request names none: a file under `MODELS_ROOT`'s `controlnet/` (an OpenPose or union ControlNet for the checkpoint's family). |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
 | `ALLOW_NSFW` | off | Lets an NSFW policy enforce. |
 | `OUTPUT_ROOT` | `darkroom-output` | `<id>.json` records and `<id>.png` images. |
-| `MODELS_ROOT` | | ComfyUI's models folder: checkpoints and LoRAs are listed and hashed from it. |
+| `MODELS_ROOT` | | ComfyUI's models folder: checkpoints, LoRAs, VAEs and ControlNets are listed and hashed from it. |
 | `DEFAULT_CHECKPOINT` | `sdxl` | The checkpoint a form starts on: an exact name, or a folder under `checkpoints/` for the first model in it. When nothing matches, `/models` reports null. |
 | `WORKFLOW` | | A template file, used for every checkpoint, or a directory of them chosen per request (see [Workflow templates](#workflow-templates)). The image defaults to `/app/examples/workflows`. |
 | `CORS_ORIGINS` | `localhost` and `127.0.0.1` on ports 3000 and 3097 | May read and write. `*` allows reads only. Compose defaults to port 3000 only. |
@@ -319,7 +335,8 @@ argus-darkroom version
 | `schema` | Writes `schema/darkroom-wire.schema.json`, or `--output`/`-o` somewhere else. `--check` exits 1 when the committed file is stale |
 | `version` | Prints the version |
 
-The CLI renders text-to-image only. Image-to-image and inpainting (`init_image`, `mask`) are reached over HTTP.
+The CLI renders text-to-image only. Image-to-image, inpainting and pose input (`init_image`, `mask`, `pose`) are
+reached over HTTP.
 
 Exit codes for `generate` and `preflight`:
 
@@ -338,11 +355,11 @@ silent fall back to the unexpanded prompt.
 
 | | |
 |---|---|
-| `GET /health` | The suite's `ServiceHealth` (argus-cortex): `service`, `version`, `status`, `started_at`, `wire` (`record_version`), `checks`, `read_only`, `peer`, `build`. `status` is `ok`, or `degraded` when ComfyUI, SingGuard, a configured NudeNet or a configured remote age check does not answer (a configured Ollama is a check too, but never degrades); both are HTTP 200. Every backend is probed on each request; `?checks=0` probes none and repeats what the last full answer found. Beside the contract, darkroom's own fields, as before: `backends`, whether each backend answers (booleans), `nsfw_allowed`, `sfw_available`, `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
+| `GET /health` | The suite's `ServiceHealth` (argus-cortex): `service`, `version`, `status`, `started_at`, `wire` (`record_version`), `checks`, `read_only`, `peer`, `build`. `status` is `ok`, or `degraded` when ComfyUI, SingGuard, a configured NudeNet or a configured remote age check does not answer (a configured Ollama or argus-puppet is a check too, but never degrades); both are HTTP 200. Every backend is probed on each request; `?checks=0` probes none and repeats what the last full answer found. Beside the contract, darkroom's own fields, as before: `backends`, whether each backend answers (booleans, `puppet` among them), `nsfw_allowed`, `sfw_available`, `pose_available` (argus-puppet is configured, so a request may carry a `pose`), `devmode`, `read_only`, `demo` (true only for `make demo`'s fake backends), age-check status, `minor_exposed` (the rule), `workflows` (names), `generating`, `gpu` as `{coordinator, in_flight, limit}`, and `nudenet_detector` (`640m`, `320n`, or `null` when NudeNet does not say or does not answer) |
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
-| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts}`, LoRAs and VAEs as `{name}` (`loras`, `vaes`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img` or `inpaint`; `img2img` is true for plain image-to-image only), `default_checkpoint`, plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
-| `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` is not checked here, only during a generation |
-| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
+| `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts, pose_lora_counts}`, LoRAs, VAEs and ControlNets as `{name}` (`loras`, `vaes`, `controlnets`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img`, `inpaint` or `pose`; `img2img` is true for plain image-to-image only), `default_checkpoint`, `default_pose_controlnet` (null when `POSE_CONTROLNET` is unset or names no file), plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
+| `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` or a `pose` photo is not checked here, only during a generation |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way) and then `pose {people, control: {sha256,width,height}}` once its skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
@@ -383,8 +400,8 @@ record's `depth` is `{model: "depth-anything-v2-small", model_license: "Apache-2
 workflow, engine_version}` (`sha256` of the stored PNG), or `null`.
 
 The generate and pre-flight body: `user_prompt`, `negative_prompt`, `expand`, `seed`, `sampling`, `checkpoint`, `vae`,
-`loras` (`{name, weight, trigger_words}`), `enforcing_policy`, `advisory_policies`, `thinking`, `nsfw_threshold`, and
-`init_image` for image-to-image:
+`loras` (`{name, weight, trigger_words}`), `enforcing_policy`, `advisory_policies`, `thinking`, `nsfw_threshold`,
+`pose` for [pose conditioning](#pose-input), and `init_image` for image-to-image:
 
 | `init_image` field | |
 |---|---|
@@ -396,6 +413,51 @@ The input is decoded once, turned upright by its EXIF orientation, made RGB and 
 that PNG is what is scanned and what ComfyUI gets. Darkroom does not store it: the record keeps
 `request.init_image` (`sha256`, `phash`, `width`, `height` of that PNG, `source_sha256` of the bytes sent, `denoise`)
 and `guard.input` (the input's `scans`, `nudenet`, `age`, `outcome` and `reason`).
+
+### Pose input
+
+`pose` steers a text-to-image generation into the body pose of a photo, through a pose ControlNet:
+
+| `pose` field | |
+|---|---|
+| `data_base64` | The photo: PNG, JPEG or WebP bytes, base64, with `init_image`'s limits. Anything else is a 400 |
+| `controlnet` | optional: a file under the models root's `controlnet/`. Default `POSE_CONTROLNET`; neither is a 400 |
+| `strength` | above 0, up to 2.0, default 0.8. Around 0.6 to 1.0 holds the pose; lower lets the prompt override it |
+| `body`, `hands`, `face` | default true: which parts of the skeleton are drawn (at least one). Turn `face` off if faces come out distorted, `hands` off for a body-only ControlNet |
+| `primary_only` | default false: draw only the photo's primary subject instead of everyone (at most 20 people) |
+| `fit` | `contain` (default: the whole photo frame, letterboxed), `cover` (fills the canvas, edges cropped) or `skeleton` (the figure fitted to the canvas, ignoring the photo's framing) |
+
+**The photo is an input image like any other.** After the text pre-flight it gets every check an output gets
+(SingGuard alone and with the prompt under every selected policy, NudeNet, the age estimate) and goes on only when its
+outcome is `passed`; anything else refuses the attempt with `pose image: <reason>`, `critical` as the photo's own
+decision says. Until then it has been sent to the guards and nowhere else.
+
+**Only the skeleton is rendered from.** Once the photo has passed, darkroom asks
+[argus-puppet](https://github.com/smk762/argus-puppet) for the keypoints of the people in it (`POST /pose`, which
+writes nothing) and then to draw those keypoints as an OpenPose-convention control image at the generation's size
+(`POST /render`, numbers in, PNG out). That drawing is what ComfyUI gets. No pixel of the photo reaches the render,
+and the photo is never written. Darkroom checks what puppet answers before using it: the keypoints must be 133 finite
+points per person in the frame of the photo it sent, and the drawing must be a PNG of exactly the generation's size
+with at most 256 flat colours (a photograph has thousands) and something drawn on it. A photo with nobody in it, a
+puppet that does not answer, or a drawing that fails those checks is a `failed` record (`pose: <why>`) and nothing is
+rendered. The drawing itself is not scanned: it holds joint positions and nothing of the photo's appearance.
+
+**A request cannot bring its own control image or keypoints.** `pose` accepts a photo and nothing else, so every
+skeleton comes from a picture darkroom checked. A pose from a library (argus-puppet's `library sample`) is sent as
+that pose's source photo. `pose` cannot be combined with `init_image` yet, and needs a `+pose`
+[template](#workflow-templates) for the checkpoint's family and LoRA count.
+
+The record keeps the photo by its hashes and the skeleton in full, so the run can be reproduced without the photo:
+`request.pose` holds `sha256`, `phash`, `width`, `height` (of the photo as judged) and `source_sha256` (of the bytes
+sent); `controlnet` as `{name, sha256}`; `strength`, `body`, `hands`, `face`, `primary_only`, `fit`; `people`, each
+`{keypoints, primary}` with 133 `(x, y, score)` points in the photo's pixel frame (`layout`:
+`coco_wholebody_133`); `estimator` (puppet's version, its wire version, and its detector and pose model as
+`{name, sha256}`); and `control` (`sha256`, `width`, `height` of the drawing). `guard.pose_input` is the photo's own
+scan, shaped like `guard.input`. On a record refused or failed before puppet answered, `people` is empty and
+`estimator` and `control` are null.
+
+Puppet leases its own GPU for `/pose`, at the caller's `X-Argus-Priority`; darkroom calls it before it asks for the
+render's lease, so no lease is held across the call.
 
 ### Inpainting
 

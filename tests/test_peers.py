@@ -20,6 +20,7 @@ PEERS = [  # (Settings field, darkroom's variable, the suite-wide variable)
     ("nudenet_url", "NUDENET_URL", "ARGUS_NUDENET_URL"),
     ("comfyui_url", "COMFYUI_URL", "ARGUS_COMFYUI_URL"),
     ("ollama_url", "OLLAMA_URL", "ARGUS_OLLAMA_URL"),
+    ("puppet_url", "PUPPET_URL", "ARGUS_PUPPET_URL"),
 ]
 
 
@@ -57,7 +58,7 @@ def test_the_suite_file_supplies_a_url_the_environment_does_not(monkeypatch, tmp
 # --- a guard is never lost to a typo, and a required one still refuses ------------------------------------
 
 
-@pytest.mark.parametrize("var", ["SINGGUARD_URL", "NUDENET_URL", "COMFYUI_URL", "OLLAMA_URL", "AGE_URL"])
+@pytest.mark.parametrize("var", ["SINGGUARD_URL", "NUDENET_URL", "COMFYUI_URL", "OLLAMA_URL", "AGE_URL", "PUPPET_URL"])
 @pytest.mark.parametrize("value", ["guard:9150", "/api/guard", "ftp://guard", "http://", "http://guard:port"])
 def test_a_malformed_url_is_a_configuration_error_not_an_unconfigured_backend(monkeypatch, var, value) -> None:
     monkeypatch.setenv(OWN + var, value)

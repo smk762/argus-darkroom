@@ -12,6 +12,26 @@ change on a host is listed under "Behaviour changes" below.
 
 ### Added
 
+- **Pose input** (argus-puppet#1, phase 4): a request's `pose` steers a text-to-image generation into the body pose
+  of a photo, through a pose ControlNet. `pose` is `{data_base64, controlnet, strength, body, hands, face,
+  primary_only, fit}`. The photo is an input image like any other: after the text pre-flight it gets every check an
+  output gets and goes on only when it passes (`refused`, `pose image: <reason>` otherwise). Then argus-puppet reads
+  the people's keypoints from it and draws them in the OpenPose convention at the generation's size, and that drawing
+  is all ComfyUI gets. A request cannot send a control image or keypoints of its own. Darkroom checks puppet's
+  answers (133 finite points per person in the photo's frame; a PNG of the generation's size with at most 256
+  colours) and a pose that cannot be read or drawn is a `failed` record (`pose: <why>`), never a render without it.
+  Neither the photo nor the drawing is written.
+  - Templates: `<family>[+lora<N>]+pose.json`, with `$pose_image`, `$controlnet` and `$pose_strength`; examples
+    `sdxl+pose` and `sdxl+lora1+pose`. No new ComfyUI node: the drawing uses `DarkroomLoadImageBase64`.
+  - Settings: `ARGUS_DARKROOM_PUPPET_URL` (then the suite-wide `ARGUS_PUPPET_URL`) and
+    `ARGUS_DARKROOM_POSE_CONTROLNET` (a file under the models root's `controlnet/`); compose's `.env` takes
+    `PUPPET_URL` and `POSE_CONTROLNET`. Without a puppet URL a request with a `pose` is a 400.
+  - Record (`record_version` stays `1.0`; fields are only added): `request.pose` (the photo's hashes, the ControlNet
+    as `{name, sha256}`, the options, `people` with every keypoint that was drawn, puppet's `estimator`, and the
+    drawing's `control` hash and size) and `guard.pose_input` (the photo's scan).
+  - API: SSE events `pose_scan` and `pose`; `/health` gains `pose_available`, `backends.puppet` and an informational
+    `puppet` check (it never degrades the status); `/models` gains `controlnets`, `default_pose_controlnet` and each
+    checkpoint's `pose_lora_counts`; a workflow's `mode` may be `pose`.
 - **Suite-wide backend URLs** (argus-cortex 0.16 `peers`, argus-cortex#209). Each backend is found by darkroom's own
   variable, then the suite-wide one: `ARGUS_DARKROOM_SINGGUARD_URL` then `ARGUS_SINGGUARD_URL`, and likewise
   `ARGUS_NUDENET_URL`, `ARGUS_COMFYUI_URL` and `ARGUS_OLLAMA_URL`. Each is read from the environment, then from the
