@@ -54,7 +54,7 @@ services:
       # Reach services on the host (ComfyUI, SingGuard) the same way on Linux as on Docker Desktop.
       - "host.docker.internal:host-gateway"
 
-  safelight:
+  safelight:  # nosemgrep: service-peer-label  UI only: argus-safelight's Next.js demo UI, no ServiceHealth /health
     build:
       context: ${SAFELIGHT_CONTEXT:-../argus-safelight}
       args:

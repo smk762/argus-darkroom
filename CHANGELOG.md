@@ -27,6 +27,8 @@ change on a host is listed under "Behaviour changes" below.
   probes nothing and repeats what the last full answer found (all false before one).
 - Compose labels for argus-iris's directory: `argus.peer: darkroom`, `argus.service: argus-darkroom`,
   `argus.health: /health`, `argus.port: "8106"`, and `ARGUS_PEER=darkroom` so `/health` reports it.
+  The `safelight` UI container is marked not a peer (`# nosemgrep: service-peer-label`), for argus-ci's
+  `service-peer-label` rule.
 - `compose.suite.yaml`, an opt-in override that mounts the suite file read-only at `/etc/argus/suite.env`
   (`COMPOSE_FILE=compose.yaml:compose.suite.yaml`). Known limit (argus-cortex#218): the image runs as an unprivileged
   user, so today the mounted file must be owned by root.
