@@ -1151,6 +1151,34 @@
     "PoseRef": {
       "description": "A pose input: where the pose came from, the skeleton, and what was drawn from it. Never a pixel.\n\n``source`` is ``photo`` when darkroom took the pose from a photo it checked. ``sha256``, ``phash``, ``width`` and\n``height`` are then of the photo as darkroom judged it and sent it to argus-puppet (decoded, turned upright, made\nRGB and re-encoded as a PNG with no metadata), ``source_sha256`` is of the bytes the caller sent, and ``people``\nand ``estimator`` are what argus-puppet read from it.\n\n``source`` is ``keypoints`` when the request gave the pose directly. There was no photo: ``sha256`` and ``phash``\nare null, ``width`` and ``height`` are the frame the request stated, ``people`` are the request's keypoints,\n``estimator`` is null, and ``source_sha256`` is the image the caller says they came from, if it said (never seen\nor verified by darkroom).\n\nOnly the skeleton drawn from ``people`` reaches ComfyUI (``control``). For a photo, ``people``, ``estimator`` and\n``control`` are filled once it passed its scan and argus-puppet answered; on a record refused or failed before\nthat they are empty and null.",
       "properties": {
+        "area": {
+          "anyOf": [
+            {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "integer"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Area"
+        },
         "body": {
           "default": true,
           "title": "Body",

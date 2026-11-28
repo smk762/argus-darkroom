@@ -29,7 +29,7 @@ from rig import EXAMPLES, EXPOSED, ILLEGAL_A, Rig, is_image_scan, nsfw
 from test_gpu import Recording, kinds
 from test_server import BODY, client, stream_events
 
-from argus_darkroom.images import MAX_CONTROL_COLOURS, UnreadableImage, load_control, load_input
+from argus_darkroom.images import MAX_CONTROL_COLOURS, UnreadableImage, load_control, load_input, place_control
 from argus_darkroom.models import MAX_POSE_PEOPLE, GenerationRecord
 from argus_darkroom.puppet import PoseUnavailable, PuppetClient
 from argus_darkroom.request import GenerateRequest, PoseInput, RequestError
@@ -464,9 +464,11 @@ def test_a_pose_input_with_no_pose_template_is_a_request_error(rig) -> None:
     refused_before_anything(rig, "no pose workflow renders this checkpoint", pose=pose())
 
 
-def test_a_pose_input_and_an_init_image_together_are_a_request_error(rig) -> None:
-    init = {"data_base64": base64.b64encode(picture()).decode()}
-    refused_before_anything(rig, "cannot be combined with an init image", pose=pose(), init_image=init)
+def test_a_pose_with_an_init_image_needs_a_template_for_both(rig) -> None:
+    init = {"data_base64": base64.b64encode(picture()).decode()}  # the rig's one template is text-to-image + pose
+    refused_before_anything(
+        rig, "no image-to-image workflow with a pose renders this checkpoint", pose=pose(), init_image=init
+    )
 
 
 @pytest.mark.parametrize(
@@ -741,6 +743,134 @@ def test_verify_options_are_validated(bad) -> None:
         PoseInput(**keypoints_pose() | bad)
 
 
+# --- a pose with an input image: inpainting a figure into a region, in a pose ------------------------------------
+
+BACKGROUND = picture((64, 64), colour=(30, 60, 90))
+BACKGROUND_B64 = base64.b64encode(load_input(base64.b64encode(BACKGROUND).decode()).png).decode()
+
+
+def region_mask(box=(16, 8, 48, 56)) -> bytes:
+    """White over *box* of a 64x64 black image: the region to repaint."""
+    image = Image.new("L", (64, 64), 0)
+    image.paste(255, box)
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def inpaint_init(denoise: float = 1.0) -> dict:
+    return {
+        "data_base64": base64.b64encode(BACKGROUND).decode(),
+        "mask_base64": base64.b64encode(region_mask()).decode(),
+        "denoise": denoise,
+    }
+
+
+@pytest.fixture
+def both(rig) -> Rig:
+    """The pose rig with the whole example set, and a checkpoint in the sdxl family."""
+    path = rig.root / "models" / "checkpoints" / "sdxl" / "a.safetensors"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"a")
+    rig.settings = replace(rig.settings, workflow=EXAMPLES)
+    return rig
+
+
+def test_a_figure_is_inpainted_in_a_pose_and_both_inputs_are_what_was_checked(both) -> None:
+    area = {"x": 16, "y": 8, "width": 32, "height": 48}
+    record = both.generate(
+        both.engine(), checkpoint="sdxl/a.safetensors", init_image=inpaint_init(), pose=keypoints_pose(area=area)
+    )
+    assert record.outcome == "passed" and record.request.workflow == "sdxl+lora1+inpaint+pose"
+
+    (drawn,) = both.puppet.renders
+    assert (drawn["options"]["width"], drawn["options"]["height"]) == (32, 48)  # drawn at the area's size
+    (graph,) = both.comfyui.graphs
+    images = {n["inputs"]["image"] for n in graph.values() if n["class_type"] == "DarkroomLoadImageBase64"}
+    control_b64 = next(i for i in images if i != BACKGROUND_B64)
+    assert images == {BACKGROUND_B64, control_b64}  # the checked input, and the skeleton: nothing else
+    control = Image.open(io.BytesIO(base64.b64decode(control_b64))).convert("RGB")
+    assert control.size == (64, 64)
+    inside = Image.open(io.BytesIO(skeleton_png((32, 48)))).convert("RGB")
+    assert control.crop((16, 8, 48, 56)).tobytes() == inside.tobytes()  # the skeleton, set in the area
+    outside = control.copy()
+    outside.paste((0, 0, 0), (16, 8, 48, 56))
+    assert outside.getcolors() == [(64 * 64, (0, 0, 0))]  # and black everywhere else
+
+    ref = record.request.pose
+    assert ref.area == (16, 8, 32, 48) and (ref.control.width, ref.control.height) == (64, 64)
+    assert ref.control.sha256 == hashlib.sha256(base64.b64decode(control_b64)).hexdigest()
+    assert record.request.init_image.mask is not None and record.guard.input.outcome == "passed"
+    assert record.pose_adherence.adheres is True  # the released image is still checked
+
+
+def test_the_input_image_is_scanned_before_a_pose_is_drawn(both) -> None:
+    both.singguard.responder = lambda body: (
+        (200, FLAG_B) if body.get("image_base64") == BACKGROUND_B64 and body["input"] else (200, safe_answer())
+    )
+    record = both.generate(
+        both.engine(), checkpoint="sdxl/a.safetensors", init_image=inpaint_init(), pose=keypoints_pose()
+    )
+    assert record.outcome == "refused" and record.outcome_reason == "input image: default:B"
+    assert both.puppet.calls == [] and both.comfyui.graphs == []  # a refused input: nothing is drawn or rendered
+
+
+def test_a_pose_photo_and_an_input_image_are_both_scanned(both) -> None:
+    record = both.generate(both.engine(), checkpoint="sdxl/a.safetensors", init_image=inpaint_init(), pose=pose())
+    assert record.outcome == "passed"
+    assert record.guard.input.outcome == "passed" and record.guard.pose_input.outcome == "passed"
+    kinds_seen = [k for k, _ in both.events]
+    assert kinds_seen[: kinds_seen.index("queued")] == ["preflight", *["input_scan"] * 2, *["pose_scan"] * 2, "pose"]
+    assert not comfyui_saw_the_photo(both)
+
+
+def test_a_pose_with_plain_image_to_image(both) -> None:
+    init = {"data_base64": base64.b64encode(BACKGROUND).decode(), "denoise": 0.6}
+    record = both.generate(both.engine(), checkpoint="sdxl/a.safetensors", init_image=init, pose=keypoints_pose())
+    assert record.outcome == "passed" and record.request.workflow == "sdxl+lora1+img2img+pose"
+    assert record.request.pose.area is None
+
+
+def test_without_an_area_the_skeleton_fills_the_generation(both) -> None:
+    both.generate(both.engine(), checkpoint="sdxl/a.safetensors", init_image=inpaint_init(), pose=keypoints_pose())
+    assert (both.puppet.renders[0]["options"]["width"], both.puppet.renders[0]["options"]["height"]) == CANVAS
+
+
+@pytest.mark.parametrize(
+    ("area", "why"),
+    [
+        ({"x": 40, "y": 0, "width": 32, "height": 32}, "pose.area reaches 72x32 but the generation is 64x64"),
+        ({"x": 0, "y": 60, "width": 8, "height": 8}, "pose.area reaches 8x68"),
+    ],
+)
+def test_an_area_outside_the_generation_is_a_request_error(rig, area, why) -> None:
+    refused_before_anything(rig, why, pose=keypoints_pose(area=area))
+
+
+@pytest.mark.parametrize("bad", [{"x": -1}, {"width": 0}, {"height": 0}, {"depth": 3}])
+def test_an_area_is_validated(bad) -> None:
+    with pytest.raises(ValidationError):
+        PoseInput(**keypoints_pose(area={"x": 0, "y": 0, "width": 8, "height": 8} | bad))
+
+
+def test_a_blank_drawing_in_an_area_fails_before_it_is_placed(rig) -> None:
+    rig.puppet.drawing = skeleton_png((32, 32), dots=0)
+    record = rig.generate(rig.engine(), pose=keypoints_pose(area={"x": 0, "y": 0, "width": 32, "height": 32}))
+    assert record.outcome == "failed" and "is blank" in record.outcome_reason and rig.comfyui.graphs == []
+
+
+def test_place_control_adds_only_black_and_refuses_a_drawing_that_does_not_fit() -> None:
+    part = load_control(skeleton_png((16, 16)), (16, 16))
+    whole = place_control(part, (40, 30), (20, 10))
+    image = Image.open(io.BytesIO(whole.png))
+    assert image.size == (40, 30) and hashlib.sha256(whole.png).hexdigest() == whole.sha256
+    assert len(image.convert("RGB").getcolors()) == len(Image.open(io.BytesIO(part.png)).convert("RGB").getcolors())
+    load_control(whole.png, (40, 30))  # still passes the drawing check
+    for offset in ((30, 10), (20, 20), (-1, 0)):
+        with pytest.raises(UnreadableImage, match="does not fit"):
+            place_control(part, (40, 30), offset)
+
+
 # --- the control image check and the client, on their own -----------------------------------------------------
 
 
@@ -803,20 +933,72 @@ def test_a_pose_template_needs_all_three_slots(slot) -> None:
 def test_a_pose_template_has_one_loader_and_its_image_is_the_skeleton() -> None:
     template = pose_template()
     template["90"] = {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "aGVsbG8="}}
-    with pytest.raises(WorkflowError, match="exactly one DarkroomLoadImageBase64"):
+    with pytest.raises(WorkflowError, match=r"a DarkroomLoadImageBase64 node needs \$init_image as its image"):
         parse_workflow(template)  # a second loader with a fixed image would bring in one nobody checked
+    template = pose_template()
+    template["90"] = {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "$pose_image"}}
+    with pytest.raises(WorkflowError, match=r"\$pose_image must appear once"):
+        parse_workflow(template)  # two loaders of the skeleton
     template = pose_template()
     template["90"] = {"class_type": "ImageScale", "inputs": {"image": "$pose_image"}}
     with pytest.raises(WorkflowError, match=r"\$pose_image must appear once"):
         parse_workflow(template)
 
 
-@pytest.mark.parametrize("slot", ["$init_image", "$denoise", "$init_mask"])
-def test_a_pose_template_takes_no_image_to_image_slot(slot) -> None:
+@pytest.mark.parametrize(
+    ("slot", "why"),
+    [
+        ("$init_image", "needs exactly one DarkroomLoadImageBase64"),  # besides the skeleton's own
+        ("$denoise", r"has a \$denoise slot but no \$init_image"),
+        ("$init_mask", "needs exactly one DarkroomLoadMaskBase64"),
+    ],
+)
+def test_a_pose_template_with_a_stray_image_slot_is_refused(slot, why) -> None:
     template = pose_template()
     template["90"] = {"class_type": "Anything", "inputs": {"x": slot}}
-    with pytest.raises(WorkflowError, match="pose conditioning is text-to-image"):
+    with pytest.raises(WorkflowError, match=why):
         parse_workflow(template)
+
+
+@pytest.mark.parametrize(
+    ("name", "mode"),
+    [
+        ("sdxl+img2img+pose", "img2img+pose"),
+        ("sdxl+lora1+img2img+pose", "img2img+pose"),
+        ("sdxl+inpaint+pose", "inpaint+pose"),
+        ("sdxl+lora2+inpaint+pose", "inpaint+pose"),
+    ],
+)
+def test_a_pose_goes_with_image_to_image_and_inpainting_templates(name, mode) -> None:
+    wf = load_workflow(EXAMPLES / f"{name}.json")
+    assert wf.mode == mode and not wf.img2img
+    assert {"$pose_image", "$controlnet", "$pose_strength", "$init_image", "$denoise"} <= wf.slots
+    loaders = [n for n in wf.template.values() if n["class_type"] == "DarkroomLoadImageBase64"]
+    assert sorted(n["inputs"]["image"] for n in loaders) == ["$init_image", "$pose_image"]  # each its own loader
+
+
+def test_the_input_images_rules_still_hold_beside_a_pose() -> None:
+    template = json.loads((EXAMPLES / "sdxl+inpaint+pose.json").read_text())
+    template["90"] = {"class_type": "DarkroomLoadImageBase64", "inputs": {"image": "aGVsbG8="}}
+    with pytest.raises(WorkflowError, match="needs exactly one DarkroomLoadImageBase64"):
+        parse_workflow(template)  # a third loader, with a fixed image nobody checked
+    template = json.loads((EXAMPLES / "sdxl+inpaint+pose.json").read_text())
+    loader = next(k for k, n in template.items() if n["inputs"].get("image") == "$init_image")
+    template[loader]["inputs"]["image"] = "$pose_image"
+    with pytest.raises(WorkflowError, match=r"\$pose_image must appear once"):
+        parse_workflow(template)
+
+
+def test_a_template_with_both_must_be_named_for_both(tmp_path) -> None:
+    from argus_darkroom.workflow import load_workflows
+
+    (tmp_path / "sdxl+inpaint.json").write_text((EXAMPLES / "sdxl+inpaint+pose.json").read_text())
+    with pytest.raises(WorkflowError, match=r"has \$init_mask and \$pose_image but its name says inpainting"):
+        load_workflows(tmp_path)
+    (tmp_path / "sdxl+inpaint.json").unlink()
+    (tmp_path / "sdxl+pose+inpaint.json").write_text((EXAMPLES / "sdxl+inpaint+pose.json").read_text())
+    with pytest.raises(WorkflowError, match=r"\+pose at the end"):
+        load_workflows(tmp_path)  # +pose comes last
 
 
 def test_a_pose_template_still_refuses_a_node_that_loads_from_disk() -> None:

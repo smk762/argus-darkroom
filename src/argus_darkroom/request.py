@@ -66,6 +66,17 @@ PoseKeypoints = Annotated[
 ]
 
 
+class PoseArea(BaseModel):
+    """A rectangle of the generation, in its pixels: where a pose's skeleton is drawn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    x: int = Field(ge=0)
+    y: int = Field(ge=0)
+    width: int = Field(ge=1)
+    height: int = Field(ge=1)
+
+
 class PoseInput(BaseModel):
     """A pose input: a body pose that steers the generation through a pose ControlNet. It is given one of two ways.
 
@@ -110,6 +121,9 @@ class PoseInput(BaseModel):
     # of everyone.
     primary_only: bool = False
     fit: PoseFit = "contain"
+    # Where in the generation the skeleton goes: it is fitted (by ``fit``) into this rectangle, and the rest of the
+    # control image is black. For inpainting, the region being painted. None: the whole generation.
+    area: PoseArea | None = None
     # After the image is released, have argus-puppet read its pose and compare it with the one asked for
     # (``record.pose_adherence``). A measurement only: it never changes the outcome. False skips it.
     verify: bool = True

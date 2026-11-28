@@ -587,6 +587,7 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                 # img2img_lora_counts: the same for image-to-image. Empty: it takes no input image.
                 # inpaint_lora_counts: the same for inpainting (an input image with a mask). Empty: it takes no mask.
                 # pose_lora_counts: the same with a pose input (a pose ControlNet). Empty: it takes no pose.
+                # img2img_pose_lora_counts, inpaint_pose_lora_counts: an input image (and a mask) with a pose.
                 "checkpoints": [
                     {
                         "name": n,
@@ -595,6 +596,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                         "img2img_lora_counts": workflows.lora_counts(n, "img2img") if workflows else [],
                         "inpaint_lora_counts": workflows.lora_counts(n, "inpaint") if workflows else [],
                         "pose_lora_counts": workflows.lora_counts(n, "pose") if workflows else [],
+                        "img2img_pose_lora_counts": workflows.lora_counts(n, "img2img+pose") if workflows else [],
+                        "inpaint_pose_lora_counts": workflows.lora_counts(n, "inpaint+pose") if workflows else [],
                     }
                     for n in checkpoints
                 ],

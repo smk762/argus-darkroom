@@ -247,3 +247,23 @@ def load_control(data: bytes, size: tuple[int, int]) -> ControlImage:
     rgb.save(buf, "PNG")
     png = buf.getvalue()
     return ControlImage(png=png, sha256=hashlib.sha256(png).hexdigest(), width=rgb.width, height=rgb.height)
+
+
+def place_control(drawing: ControlImage, canvas: tuple[int, int], offset: tuple[int, int]) -> ControlImage:
+    """*drawing* (a checked skeleton) set at *offset* on a black image of *canvas*: the control image for a figure
+    that belongs in one region of the generation. Nothing is added but black, so it is still only a drawing.
+
+    Raises :class:`UnreadableImage` when the drawing would not fit inside the canvas there.
+    """
+    x, y = offset
+    if x < 0 or y < 0 or x + drawing.width > canvas[0] or y + drawing.height > canvas[1]:
+        raise UnreadableImage(
+            f"a {drawing.width}x{drawing.height} pose drawing at ({x}, {y}) does not fit a {canvas[0]}x{canvas[1]} image"
+        )
+    with Image.open(io.BytesIO(drawing.png)) as part:
+        whole = Image.new("RGB", canvas, (0, 0, 0))
+        whole.paste(part.convert("RGB"), (x, y))
+    buf = io.BytesIO()
+    whole.save(buf, "PNG")
+    png = buf.getvalue()
+    return ControlImage(png=png, sha256=hashlib.sha256(png).hexdigest(), width=canvas[0], height=canvas[1])
