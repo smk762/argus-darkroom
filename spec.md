@@ -112,8 +112,14 @@ itself). It is built so that the ControlNet can never be a second way in for a p
   `image`), `$controlnet` and `$pose_strength`, and none of the image-to-image slots: a request with both a pose and
   an init image is a 400 for now. The ControlNet file is found and hashed under the models root's `controlnet/` like
   a checkpoint.
-- **Not yet: checking that the output held the pose.** argus-puppet's `POST /adherence` compares a generated image's
-  pose with the one asked for. Darkroom does not call it yet; when it does, it will be for released images only.
+- **Did the output hold the pose?** A ControlNet does not always comply. After the verdict, and only for an image
+  that was **released**, argus-puppet reads the pose in the output (`POST /pose`) and compares it with the people
+  that were drawn (`POST /adherence`); the answer is `record.pose_adherence`. It is a measurement, never a verdict:
+  it changes no outcome, and an image that does not adhere is released like any other, because not following a pose
+  is a quality matter and darkroom's outcomes are about harm. A deleted or omitted image is not sent: until the
+  verdict an output goes to the guards and nowhere else, and after a verdict against it, nowhere at all. A check
+  that cannot run (puppet down, busy, or older than wire 1.4) is recorded with its reason and costs nothing else.
+  `pose.verify: false` skips it. It runs after the render's lease is given back.
 
 Other reference images (IP-Adapter and the like) are not supported.
 
@@ -244,6 +250,9 @@ GenerationRecord (record_version "1.0", wire schema committed)
           minor_exposed, minor_exposed_rule "frame" | "overlap"} | null   # tool estimate
     input: {scans, nudenet, age, outcome, reason} | null   # the input image's own scan (image-to-image)
     pose_input: {scans, nudenet, age, outcome, reason} | null   # the pose photo's own scan; null for keypoints
+  pose_adherence: {adheres | null, threshold, distance, mean_distance, target_people, output_people, comparable,
+                   matched, close, matches: [{target, output, distance, mirrored_distance, close, mirrored}],
+                   estimator, error} | null   # a released pose image only: did it hold the pose (argus-puppet)
   image
     sha256, phash, width, height      # always, including when deleted
     path                              # only when passed or review
@@ -277,7 +286,7 @@ The package is scaffolded from `argus-pkg-template` with the CLI, server and Doc
 - `GET /policies`: names, the enforcing default and each policy's illegal rules. Safelight shows the wording.
 - `GET /models`: checkpoints and LoRAs found under the models root, skipping any diffusers folder (one holding `model_index.json`), and `default_checkpoint`, the one a form should start on (null when `DEFAULT_CHECKPOINT` matches nothing).
 - `POST /preflight`: the text check alone, so the form can show a verdict before Generate.
-- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `pose_scan` (a pose photo's cells) and `pose` (its skeleton is drawn), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409. With the GPU broker (argus-iris, `ARGUS_GPU_BROKER_URL` set) up to eight run at once, each waiting for its own GPU lease, so a second queues behind iris instead; the caller's `X-Argus-Priority` sets the lease class (`interactive` by default).
+- `POST /generate/stream`: SSE events `preflight`, `input_scan` (image-to-image and inpainting: one per finished input cell), `pose_scan` (a pose photo's cells), `pose` (its skeleton is drawn) and, after the verdict, `pose_adherence` (a released pose image), `queued`, `progress` (ComfyUI step), `scan` (one per finished cell), `complete` (the record). One generation at a time; a second gets HTTP 409. With the GPU broker (argus-iris, `ARGUS_GPU_BROKER_URL` set) up to eight run at once, each waiting for its own GPU lease, so a second queues behind iris instead; the caller's `X-Argus-Priority` sets the lease class (`interactive` by default).
 - `GET /records`: paged, filterable by outcome. `GET /record/{id}`.
 - `GET /image/{id}`: ids only, no path input. A deleted, omitted or refused record answers 404 with the record id.
 - `DELETE /record/{id}`: the user removing their own output. This deletes the file; the record stays, marked as removed by the user.

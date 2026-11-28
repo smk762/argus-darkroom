@@ -172,6 +172,42 @@ class PoseRef(BaseModel):
     control: ControlImageRef | None = None
 
 
+class PoseAdherenceMatch(BaseModel):
+    """One drawn person and the person in the output holding their pose, if any (argus-puppet's ``AdherenceMatch``)."""
+
+    target: int = Field(ge=0)  # index into request.pose.people
+    output: int | None = None  # index among the people argus-puppet found in the output; null when unmatched
+    distance: float | None = None  # pose distance as posed, in torso units; left stays left
+    mirrored_distance: float | None = None  # the same against the output person's mirror image
+    close: bool = False  # distance is below the threshold: this person holds the pose
+    mirrored: bool = False  # not close as posed, but the mirror image is: the figure came out flipped
+
+
+class PoseAdherenceRecord(BaseModel):
+    """Whether the released image holds the pose it was asked for, as argus-puppet's ``POST /adherence`` judged it.
+
+    A measurement, never a verdict: it changes no outcome and is made only for an image that was already released
+    (passed or review). It compares pose shape (the 17 body joints, hip-centred and torso-scaled), not where a figure
+    stands in the frame, its size, hands or face. ``adheres`` is null, with ``error`` saying why, when the check
+    could not run; the image is released either way.
+    """
+
+    adheres: bool | None = None
+    threshold: float | None = None
+    # The largest and the mean matched distance; null with no match.
+    distance: float | None = None
+    mean_distance: float | None = None
+    target_people: int = 0
+    output_people: int = 0
+    comparable: int = 0  # drawn people whose pose could be compared
+    matched: int = 0
+    close: int = 0
+    matches: list[PoseAdherenceMatch] = Field(default_factory=list)
+    # What read the output's pose.
+    estimator: PoseEstimatorRef | None = None
+    error: str | None = None
+
+
 class RequestRecord(BaseModel):
     """What was asked for. ``final_prompt`` is the exact string ComfyUI receives."""
 
@@ -358,6 +394,9 @@ class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     removed_at: datetime | None = None
     # A depth map of the stored image, when one was asked for. null otherwise, and again once the image is removed.
     depth: DepthRecord | None = None
+    # Pose requests only: whether the released image holds the pose it was asked for. null without a pose, when the
+    # request turned the check off (pose.verify), and for an image that was not released (it is sent nowhere).
+    pose_adherence: PoseAdherenceRecord | None = None
 
 
 def render_wire_schema() -> str:

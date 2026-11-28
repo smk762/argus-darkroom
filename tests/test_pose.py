@@ -10,6 +10,7 @@ its bytes, never from its content, and the "skeleton" is a few coloured squares.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import io
 import json
@@ -134,8 +135,9 @@ def test_a_passed_photo_is_read_and_drawn_by_puppet_and_only_the_drawing_reaches
     assert record.outcome == "passed" and record.outcome_reason is None
 
     # puppet: the judged photo, then its keypoints (numbers only) drawn at the generation's size
-    assert rig.puppet.calls == ["POST /pose", "POST /render"]
-    assert rig.puppet.posed == [CANONICAL]
+    # (and, once the image is released, the output's pose compared with the one asked for: see the adherence tests)
+    assert rig.puppet.calls[:2] == ["POST /pose", "POST /render"]
+    assert rig.puppet.posed[0] == CANONICAL
     (drawn,) = rig.puppet.renders
     assert drawn["pose"] == {"keypoints": [fake_person(primary=True)["keypoints"]], "width": 40, "height": 56}
     assert drawn["options"] == {
@@ -194,7 +196,7 @@ def test_the_photo_is_scanned_like_an_output_before_puppet_sees_it(rig) -> None:
         ("default", True),
         ("default", False),
     ]
-    assert seen_by_guard_first == [4, 4]  # both puppet calls came after all four of the photo's scans
+    assert seen_by_guard_first[:2] == [4, 4]  # the read and the drawing came after all four of the photo's scans
     assert CANONICAL in rig.nudenet.bodies[0]  # NudeNet scores the photo first, then the output
     kinds_seen = [k for k, _ in rig.events]
     assert kinds_seen[: kinds_seen.index("queued")] == ["preflight", *["pose_scan"] * 4, "pose"]
@@ -208,10 +210,32 @@ def test_the_photo_is_scanned_like_an_output_before_puppet_sees_it(rig) -> None:
 def test_puppet_is_called_before_the_gpu_lease_is_asked_for(rig) -> None:
     coordinator = Recording()
     leases_at_call: list[int] = []
-    rig.puppet.on_call = lambda path: leases_at_call.append(len(coordinator.calls))
+    coordinator.held_at_puppet_call = []
+    held = {"now": False}
+    inner = coordinator.lease
+
+    @contextlib.contextmanager
+    def lease(**kw):
+        with inner(**kw) as granted:
+            held["now"] = True
+            try:
+                yield granted
+            finally:
+                held["now"] = False
+
+    coordinator.lease = lease
+
+    def on_call(path: str) -> None:
+        leases_at_call.append(len(coordinator.calls))
+        coordinator.held_at_puppet_call.append(held["now"])
+
+    rig.puppet.on_call = on_call
     record = rig.generate(rig.engine(gpu_coordinator=coordinator), pose=pose())
     assert record.outcome == "passed"
-    assert leases_at_call == [0, 0]  # puppet leases its own GPU: darkroom holds none across the calls
+    # puppet leases its own GPU. The read and the drawing come before darkroom asks for its lease; the adherence
+    # check comes after the render gave it back (the image is released by then).
+    assert leases_at_call == [0, 0, 1, 1]
+    assert coordinator.held_at_puppet_call == [False] * 4
     assert kinds(coordinator) == [("generate", "comfyui")] and not coordinator.nested
 
 
@@ -509,7 +533,8 @@ def test_keypoints_are_drawn_as_given_with_no_photo_and_nothing_to_scan(rig) -> 
     record = rig.generate(rig.engine(), pose=keypoints_pose(strength=0.9, source_sha256=stated))
     assert record.outcome == "passed"
 
-    assert rig.puppet.calls == ["POST /render"] and rig.puppet.posed == []  # puppet reads no image: there is none
+    assert rig.puppet.calls[0] == "POST /render"  # puppet reads no pose image: there is none
+    assert rig.puppet.posed == [rig.comfyui.png]  # the one image it reads is the released output, for adherence
     (drawn,) = rig.puppet.renders
     assert drawn["pose"] == {"keypoints": [POINTS], "width": 200, "height": 300}
     assert drawn["options"]["width"] == 64 and drawn["options"]["fit"] == "contain"
@@ -608,6 +633,112 @@ def test_a_pose_is_one_source_and_well_formed(given, why) -> None:
 
 def test_keypoints_show_as_a_count_in_a_repr() -> None:
     assert "2 people" in repr(PoseInput(**keypoints_pose([POINTS, OTHER])))
+
+
+# --- adherence: did the released image hold the pose? A measurement, after the verdict ----------------------
+
+
+def test_a_released_image_is_checked_against_the_pose_it_was_asked_for(rig) -> None:
+    rig.puppet.people_of = lambda image: [fake_person(5.0, primary=True)] if image == CANONICAL else [fake_person(9.0)]
+    record = rig.generate(rig.engine(), pose=pose(verify_threshold=0.1))
+    assert record.outcome == "passed"
+    assert rig.puppet.calls == ["POST /pose", "POST /render", "POST /pose", "POST /adherence"]
+    assert rig.puppet.posed == [CANONICAL, rig.comfyui.png]
+    (asked,) = rig.puppet.adherences
+    assert asked == {
+        "target": {"keypoints": [fake_person(5.0)["keypoints"]], "width": 40, "height": 56},  # what was drawn
+        "output": {"keypoints": [fake_person(9.0)["keypoints"]], "width": 64, "height": 64},  # what came out
+        "threshold": 0.1,
+    }
+    got = record.pose_adherence
+    assert got.adheres is True and got.threshold == 0.1 and got.error is None
+    assert (got.target_people, got.output_people, got.comparable, got.matched, got.close) == (1, 1, 1, 1, 1)
+    assert got.distance == 0.05 and got.matches[0].model_dump() == {
+        "target": 0, "output": 0, "distance": 0.05, "mirrored_distance": 0.6, "close": True, "mirrored": False,
+    }  # fmt: skip
+    assert got.estimator.pose.name == "dwpose-l-384x288"
+    kinds_seen = [k for k, _ in rig.events]
+    assert kinds_seen[-2:] == ["pose_adherence", "complete"] and dict(rig.events)["pose_adherence"]["adheres"] is True
+    assert rig.engine().store.load(record.id) == record  # the stored record carries it
+
+
+def test_a_pose_that_was_not_held_is_recorded_and_changes_no_outcome(rig) -> None:
+    rig.puppet.adherence_answer = {
+        "adheres": False, "threshold": 0.25, "target_people": 1, "output_people": 1, "comparable": 1, "matched": 1,
+        "close": 0, "distance": 0.41, "mean_distance": 0.41,
+        "matches": [{"target": 0, "output": 0, "distance": 0.41, "mirrored_distance": 0.02, "close": False,
+                     "mirrored": True}],
+    }  # fmt: skip
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "passed" and record.image.path  # still released: adherence is not a verdict
+    assert record.pose_adherence.adheres is False and record.pose_adherence.matches[0].mirrored is True
+    assert "threshold" not in rig.puppet.adherences[0]  # none asked for: puppet's default
+
+
+def test_an_image_under_review_is_released_and_so_is_checked(rig) -> None:
+    rig.singguard.responder = lambda body: (
+        (200, FLAG_B) if body.get("image_base64") and body["input"] and not is_photo(body) else (200, safe_answer())
+    )
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "review" and record.pose_adherence.adheres is True
+
+
+@pytest.mark.parametrize("why", ["illegal", "exposed"])
+def test_an_image_that_is_not_released_is_never_sent_to_puppet(rig, why) -> None:
+    if why == "illegal":
+        nsfw(rig)
+        rig.singguard.responder = lambda body: (
+            (200, ILLEGAL_A) if is_image_scan(body) and not is_photo(body) else (200, safe_answer())
+        )
+    else:
+        rig.nudenet.labels = EXPOSED  # SFW: omitted
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == ("deleted" if why == "illegal" else "omitted")
+    assert rig.puppet.calls == ["POST /render"] and rig.puppet.posed == []  # the output went to the guards only
+    assert record.pose_adherence is None and "pose_adherence" not in [k for k, _ in rig.events]
+
+
+def test_verify_false_skips_the_check(rig) -> None:
+    record = rig.generate(rig.engine(), pose=pose(verify=False))
+    assert record.outcome == "passed" and record.pose_adherence is None
+    assert rig.puppet.calls == ["POST /pose", "POST /render"]
+
+
+@pytest.mark.parametrize(
+    ("route", "status", "reason"),
+    [
+        ("adherence", 404, "HTTP 404 to /adherence"),  # an argus-puppet from before wire 1.4
+        ("adherence", 503, "HTTP 503 to /adherence"),
+    ],
+)
+def test_a_check_that_cannot_run_is_noted_and_the_image_is_released_anyway(rig, route, status, reason) -> None:
+    setattr(rig.puppet, f"{route}_status", status)
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "passed" and (rig.out / record.image.path).is_file()
+    got = record.pose_adherence
+    assert got.adheres is None and reason in got.error and got.target_people == 1 and "detail" not in got.error
+
+
+def test_an_answer_that_is_not_an_adherence_is_noted(rig) -> None:
+    rig.puppet.adherence_answer = {"adheres": "perhaps"}
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "passed" and record.pose_adherence.adheres is None
+    assert "not a pose adherence" in record.pose_adherence.error and "perhaps" not in record.pose_adherence.error
+
+
+def test_an_output_with_nobody_in_it_does_not_adhere_and_is_not_compared(rig) -> None:
+    rig.puppet.people_of = lambda image: []
+    record = rig.generate(rig.engine(), pose=keypoints_pose([POINTS, OTHER]))
+    got = record.pose_adherence
+    assert got.adheres is False and (got.target_people, got.output_people, got.matched) == (2, 0, 0)
+    assert [m.output for m in got.matches] == [None, None] and rig.puppet.adherences == []
+    assert record.outcome == "passed"
+
+
+@pytest.mark.parametrize("bad", [{"verify_threshold": -0.1}, {"verify_threshold": 11}, {"verify": "sometimes"}])
+def test_verify_options_are_validated(bad) -> None:
+    with pytest.raises(ValidationError):
+        PoseInput(**keypoints_pose() | bad)
 
 
 # --- the control image check and the client, on their own -----------------------------------------------------

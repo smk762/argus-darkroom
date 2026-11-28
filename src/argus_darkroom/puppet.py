@@ -21,11 +21,20 @@ from urllib.parse import urlsplit
 from argus_cortex.gpu_wire import PriorityClass
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from argus_darkroom.models import MAX_POSE_PEOPLE, POSE_LAYOUT, ModelRef, PoseEstimatorRef, PosePerson
+from argus_darkroom.models import (
+    MAX_POSE_PEOPLE,
+    POSE_LAYOUT,
+    ModelRef,
+    PoseAdherenceMatch,
+    PoseAdherenceRecord,
+    PoseEstimatorRef,
+    PosePerson,
+)
 
 READ_TIMEOUT = 60.0  # per read: a cold puppet loads two models first
 DEADLINE = 180.0  # the whole call, a wait for puppet's GPU lease included
 MAX_POSE_REPLY = 8 * 1024 * 1024  # a PoseResult of 20 people is about 100 KiB
+MAX_ADHERENCE_REPLY = 1024 * 1024  # a PoseAdherence of 20 matches is a few KiB
 MAX_CONTROL_REPLY = 32 * 1024 * 1024  # a skeleton PNG is mostly black: far under this at any size darkroom renders
 
 
@@ -59,6 +68,23 @@ class _PoseAnswer(BaseModel):
     layout: str = POSE_LAYOUT
     people: list[PosePerson] = Field(default_factory=list)
     estimator: _Estimator | None = None
+
+
+class _Adherence(BaseModel):
+    """The part of puppet's ``PoseAdherence`` darkroom records."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    adheres: bool
+    threshold: float = Field(ge=0)
+    distance: float | None = Field(default=None, ge=0)
+    mean_distance: float | None = Field(default=None, ge=0)
+    target_people: int = Field(ge=0)
+    output_people: int = Field(ge=0)
+    comparable: int = Field(ge=0)
+    matched: int = Field(ge=0)
+    close: int = Field(ge=0)
+    matches: list[PoseAdherenceMatch] = Field(default_factory=list, max_length=MAX_POSE_PEOPLE)
 
 
 @dataclass(frozen=True)
@@ -165,3 +191,45 @@ class PuppetClient:
             },
         }
         return self._post("/render", json.dumps(request).encode(), "application/json", MAX_CONTROL_REPLY, {})
+
+    def adherence(
+        self,
+        target: tuple[PosePerson, ...],
+        frame: tuple[int, int],
+        image: bytes,
+        size: tuple[int, int],
+        *,
+        threshold: float | None = None,
+        priority: PriorityClass | None = None,
+    ) -> PoseAdherenceRecord:
+        """Whether *image* (a released output of *size*) holds the pose of *target* (keypoints in *frame*).
+
+        Puppet reads the image's pose (``POST /pose``) and compares the two (``POST /adherence``, puppet wire 1.4).
+        An image with nobody in it does not adhere, and is not sent on to be compared. Raises
+        :class:`PoseUnavailable`.
+        """
+        found = self.read(image, size, priority)
+        if not found.people:
+            return PoseAdherenceRecord(
+                adheres=False,
+                threshold=threshold,
+                target_people=len(target),
+                matches=[PoseAdherenceMatch(target=i) for i in range(len(target))],
+                estimator=found.estimator,
+            )
+        request: dict = {
+            "target": {"keypoints": [p.keypoints for p in target], "width": frame[0], "height": frame[1]},
+            "output": {
+                "keypoints": [p.keypoints for p in found.people[:MAX_POSE_PEOPLE]],
+                "width": size[0],
+                "height": size[1],
+            },
+        }
+        if threshold is not None:
+            request["threshold"] = threshold
+        body = self._post("/adherence", json.dumps(request).encode(), "application/json", MAX_ADHERENCE_REPLY, {})
+        try:
+            answer = _Adherence.model_validate(json.loads(body))
+        except (ValueError, ValidationError) as exc:
+            raise PoseUnavailable("argus-puppet's answer to /adherence is not a pose adherence") from exc
+        return PoseAdherenceRecord(**answer.model_dump(), estimator=found.estimator)

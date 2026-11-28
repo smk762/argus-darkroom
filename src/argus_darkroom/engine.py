@@ -60,6 +60,7 @@ from argus_darkroom.models import (
     DepthRecord,
     GenerationRecord,
     GuardRecord,
+    ImageRecord,
     InitImageRef,
     InputScanRecord,
     LoRARef,
@@ -68,6 +69,7 @@ from argus_darkroom.models import (
     NudeNetBox,
     NudeNetRecord,
     Outcome,
+    PoseAdherenceRecord,
     PoseEstimatorRef,
     PosePerson,
     PoseRef,
@@ -94,7 +96,7 @@ from argus_darkroom.workflow import (
 logger = structlog.get_logger()
 
 # (event kind, JSON-able payload): "preflight", "input_scan", "pose_scan", "pose", "queued", "progress", "scan",
-# "complete"
+# "pose_adherence", "complete"
 Emit = Callable[[str, dict], None]
 _REASON_MAX = 500
 INPUT_REFUSAL = "input image: "
@@ -778,6 +780,41 @@ class Engine:
         )
         return PoseControl(people=people, estimator=estimator, image=load_control(drawing, canvas))
 
+    def pose_adherence(
+        self,
+        request: GenerateRequest,
+        prepared: Prepared,
+        control: PoseControl,
+        image: bytes,
+        described: ImageRecord,
+        priority: PriorityClass = gpu.DEFAULT_PRIORITY,
+    ) -> PoseAdherenceRecord:
+        """Whether a released *image* holds the pose it was rendered from, as argus-puppet judges it.
+
+        Call it only for an image that was released: this sends the image to argus-puppet. It never raises: a check
+        that cannot run is a record with ``adheres`` null and the reason in ``error``.
+        """
+        assert request.pose is not None
+        if self.puppet is None:
+            return PoseAdherenceRecord(error="argus-puppet is not configured")
+        asked = request.pose
+        frame = (
+            (prepared.pose.record.width, prepared.pose.record.height)
+            if prepared.pose is not None
+            else (asked.width or 1, asked.height or 1)
+        )
+        try:
+            return self.puppet.adherence(
+                control.people,
+                frame,
+                image,
+                (described.width, described.height),
+                threshold=asked.verify_threshold,
+                priority=priority,
+            )
+        except PoseUnavailable as exc:
+            return PoseAdherenceRecord(error=_scrub(str(exc))[:_REASON_MAX], target_people=len(control.people))
+
     # -- the whole flow ---------------------------------------------------------------------------------
 
     def generate(
@@ -994,6 +1031,12 @@ class Engine:
         )
         if decision.released:
             record = self._release(record, rendered.image)
+            if control is not None and request.pose is not None and request.pose.verify:
+                # Only now, and only for a released image: a deleted or omitted one is sent nowhere. A measurement,
+                # after the verdict, that cannot change it; a check that fails is noted and costs nothing else.
+                record.pose_adherence = self.pose_adherence(request, prepared, control, rendered.image, image, priority)
+                send("pose_adherence", record.pose_adherence.model_dump(mode="json"))
+                self.store.save(record)
         else:
             self.store.save(record)  # a deleted or omitted image is never written: this is all that is kept
         send("complete", {"record": record.model_dump(mode="json")})

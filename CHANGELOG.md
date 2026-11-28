@@ -34,6 +34,12 @@ change on a host is listed under "Behaviour changes" below.
   - API: SSE events `pose_scan` and `pose`; `/health` gains `pose_available`, `backends.puppet` and an informational
     `puppet` check (it never degrades the status); `/models` gains `controlnets`, `default_pose_controlnet` and each
     checkpoint's `pose_lora_counts`; a workflow's `mode` may be `pose`.
+- **Pose adherence** (argus-puppet#1): after a pose image is released (`passed` or `review`), argus-puppet reads the
+  pose in it and compares it with the pose that was drawn (`POST /adherence`, argus-puppet wire 1.4), and the record
+  gains `pose_adherence`: `adheres`, `threshold`, `distance`, per-person `matches` (with `mirrored` for a figure that
+  came out flipped), the estimator, or an `error` when the check could not run. A measurement, never a verdict: no
+  outcome changes, and an image that is not released is sent nowhere. `pose.verify` (default true) turns it off;
+  `pose.verify_threshold` sets the distance. New SSE event `pose_adherence`, just before `complete`.
 - **Suite-wide backend URLs** (argus-cortex 0.16 `peers`, argus-cortex#209). Each backend is found by darkroom's own
   variable, then the suite-wide one: `ARGUS_DARKROOM_SINGGUARD_URL` then `ARGUS_SINGGUARD_URL`, and likewise
   `ARGUS_NUDENET_URL`, `ARGUS_COMFYUI_URL` and `ARGUS_OLLAMA_URL`. Each is read from the environment, then from the

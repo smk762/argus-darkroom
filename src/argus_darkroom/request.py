@@ -16,6 +16,7 @@ MAX_POSE_STRENGTH = 2.0  # ComfyUI's own ceiling is higher; past 2 a ControlNet 
 # How the pose photo's frame maps onto the generation canvas (argus-puppet's RenderOptions.fit, less `stretch`, which
 # distorts the skeleton).
 PoseFit = Literal["contain", "cover", "skeleton"]
+MAX_VERIFY_THRESHOLD = 10.0  # torso units: far past any two poses
 MAX_POSE_FRAME = 65535  # the largest frame argus-puppet draws keypoints from
 
 
@@ -109,6 +110,11 @@ class PoseInput(BaseModel):
     # of everyone.
     primary_only: bool = False
     fit: PoseFit = "contain"
+    # After the image is released, have argus-puppet read its pose and compare it with the one asked for
+    # (``record.pose_adherence``). A measurement only: it never changes the outcome. False skips it.
+    verify: bool = True
+    # The pose distance below which a person holds the pose. None: argus-puppet's default (0.25).
+    verify_threshold: float | None = Field(default=None, ge=0.0, le=MAX_VERIFY_THRESHOLD)
 
     @model_validator(mode="after")
     def _one_source_and_something_drawn(self) -> PoseInput:
