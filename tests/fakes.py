@@ -380,11 +380,12 @@ def person(x: float = 10.0, primary: bool = False) -> dict:
 
 
 class FakePuppet:
-    """argus-puppet's ``GET /health``, ``POST /pose`` and ``POST /render``, on a real socket.
+    """argus-puppet's ``GET /health``, ``POST /pose``, ``POST /render`` and ``POST /adherence``, on a real socket.
 
-    ``/pose`` answers a ``PoseResult`` for the posted image with *people*; ``/render`` answers *drawing* (bytes), or a
-    stand-in skeleton of the canvas the request asks for. Every call is kept in order (``calls``), with the bodies
-    (``posed``: the images; ``renders``: the JSON).
+    ``/pose`` answers a ``PoseResult`` for the posted image with *people* (or ``people_of(image)``); ``/render``
+    answers *drawing* (bytes), or a stand-in skeleton of the canvas the request asks for; ``/adherence`` answers
+    *adherence_answer*, or a ``PoseAdherence`` saying every target person is held. Every call is kept in order
+    (``calls``), with the bodies (``posed``: the images; ``renders`` and ``adherences``: the JSON).
     """
 
     DETECTOR = {"name": "yolox_m", "sha256": "a" * 64, "license": "Apache-2.0", "bytes": 1}
@@ -395,6 +396,10 @@ class FakePuppet:
         self.drawing: bytes | None = None
         self.pose_status = 200
         self.render_status = 200
+        self.adherence_status = 200
+        self.adherence_answer: object | None = None  # sent instead of the default PoseAdherence when set
+        self.adherences: list[dict] = []
+        self.people_of: Callable[[bytes], list[dict]] | None = None  # the people /pose finds, by image
         self.pose_answer: object | None = None  # sent instead of the PoseResult when set
         self.frame: tuple[int, int] | None = None  # the size /pose reports; default: the posted image's
         self.redirect_to: str | None = None
@@ -441,8 +446,8 @@ class FakePuppet:
                         "width": width,
                         "height": height,
                         "layout": "coco_wholebody_133",
-                        "people": fake.people,
-                        "primary": next((i for i, p in enumerate(fake.people) if p.get("primary")), None),
+                        "people": (people := fake.people_of(body) if fake.people_of else fake.people),
+                        "primary": next((i for i, p in enumerate(people) if p.get("primary")), None),
                         "estimator": {
                             "name": "topdown",
                             "layout": "coco_wholebody_133",
@@ -464,6 +469,32 @@ class FakePuppet:
                     options = request["options"]
                     drawing = fake.drawing or skeleton_png((options["width"], options["height"]))
                     self._send(200, drawing, "image/png")
+                elif path == "/adherence":
+                    request = json.loads(body)
+                    fake.adherences.append(request)
+                    if fake.adherence_status != 200:
+                        self._send(fake.adherence_status, b'{"detail": "no"}')
+                        return
+                    n = len(request["target"]["keypoints"])
+                    answer = fake.adherence_answer or {
+                        "puppet_version": "1.4",
+                        "adheres": True,
+                        "threshold": request.get("threshold", 0.25),
+                        "primary_only": False,
+                        "target_people": n,
+                        "output_people": len(request["output"]["keypoints"]),
+                        "comparable": n,
+                        "matched": n,
+                        "close": n,
+                        "distance": 0.05,
+                        "mean_distance": 0.05,
+                        "matches": [
+                            {"target": i, "output": i, "distance": 0.05, "mirrored_distance": 0.6, "shared_joints": 17,
+                             "close": True, "mirrored": False, "unusable_reason": None}
+                            for i in range(n)
+                        ],
+                    }  # fmt: skip
+                    self._send(200, json.dumps(answer).encode())
                 else:
                     self._send(404, b"{}")
 

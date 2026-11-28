@@ -361,7 +361,7 @@ silent fall back to the unexpanded prompt.
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts, pose_lora_counts}`, LoRAs, VAEs and ControlNets as `{name}` (`loras`, `vaes`, `controlnets`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img`, `inpaint` or `pose`; `img2img` is true for plain image-to-image only), `default_checkpoint`, `default_pose_controlnet` (null when `POSE_CONTROLNET` is unset or names no file), plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` or a `pose` photo is not checked here, only during a generation |
-| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way; none for a pose given as keypoints) and then `pose {people, control: {sha256,width,height}}` once the skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way; none for a pose given as keypoints) and then `pose {people, control: {sha256,width,height}}` once the skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `pose_adherence {adheres, distance, ...}` (a released pose image only, just before `complete`), `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
@@ -436,6 +436,8 @@ ways, and exactly one:
 | `body`, `hands`, `face` | default true: which parts of the skeleton are drawn (at least one). Turn `face` off if faces come out distorted, `hands` off for a body-only ControlNet |
 | `primary_only` | default false: draw only the primary subject instead of everyone (at most 20 people) |
 | `fit` | `contain` (default: the whole frame, letterboxed), `cover` (fills the canvas, edges cropped) or `skeleton` (the figure fitted to the canvas, ignoring the frame) |
+| `verify` | default true: once the image is released, check that it holds the pose (see below). False skips the check |
+| `verify_threshold` | optional, 0 to 10: the pose distance below which a person holds the pose. Default argus-puppet's, 0.25 (lenient; about 0.1 is strict) |
 
 **A photo is an input image like any other.** After the text pre-flight it gets every check an output gets
 (SingGuard alone and with the prompt under every selected policy, NudeNet, the age estimate) and goes on only when its
@@ -475,8 +477,29 @@ each `{keypoints, primary}` with 133 `(x, y, score)` points (`layout`: `coco_who
 | `estimator` | puppet's version, wire version, and its detector and pose model as `{name, sha256}` | null |
 | `guard.pose_input` | the photo's own scan, shaped like `guard.input` | null |
 
-Puppet leases its own GPU for `/pose`, at the caller's `X-Argus-Priority`; darkroom calls it before it asks for the
-render's lease, so no lease is held across the call.
+**Did the image hold the pose?** A ControlNet does not always comply. After an image is **released** (`passed` or
+`review`), darkroom has argus-puppet read the pose in it (`POST /pose`) and compare it with the pose that was drawn
+(`POST /adherence`, argus-puppet wire 1.4), and records the answer as `pose_adherence`:
+
+```json
+{"adheres": false, "threshold": 0.25, "distance": 0.41, "mean_distance": 0.41,
+ "target_people": 1, "output_people": 1, "comparable": 1, "matched": 1, "close": 0,
+ "matches": [{"target": 0, "output": 0, "distance": 0.41, "mirrored_distance": 0.02, "close": false, "mirrored": true}],
+ "estimator": {"...": "what read the output's pose"}, "error": null}
+```
+
+- It is a **measurement, not a verdict**: it changes no outcome, and an image that does not adhere is released like
+  any other. A caller that wants to gate on it reads `adheres` or `distance`.
+- Each drawn person is matched to one person in the output. Left and right matter: `mirrored` is a figure that came
+  out flipped. It compares pose shape only, not where a figure stands, its size, hands or face.
+- An image that is **not released** (`deleted`, `omitted`) is sent nowhere: no check runs and `pose_adherence` is
+  null. So is a request with `verify: false`, and any request without a pose.
+- A check that cannot run (puppet down, busy, or older than wire 1.4) costs nothing else: `adheres` is null and
+  `error` says why. An output with nobody in it does not adhere.
+
+Puppet leases its own GPU for `/pose`, at the caller's `X-Argus-Priority`. Darkroom reads and draws the pose before
+it asks for the render's lease, and checks adherence after the render gave it back, so no lease is held across a
+call to puppet.
 
 ### Inpainting
 

@@ -296,6 +296,17 @@
           "default": null,
           "title": "Outcome Reason"
         },
+        "pose_adherence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseAdherenceRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "record_version": {
           "default": "1.0",
           "title": "Record Version",
@@ -874,6 +885,177 @@
         "bbox"
       ],
       "title": "PersonAge",
+      "type": "object"
+    },
+    "PoseAdherenceMatch": {
+      "description": "One drawn person and the person in the output holding their pose, if any (argus-puppet's ``AdherenceMatch``).",
+      "properties": {
+        "close": {
+          "default": false,
+          "title": "Close",
+          "type": "boolean"
+        },
+        "distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance"
+        },
+        "mirrored": {
+          "default": false,
+          "title": "Mirrored",
+          "type": "boolean"
+        },
+        "mirrored_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mirrored Distance"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Output"
+        },
+        "target": {
+          "minimum": 0,
+          "title": "Target",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "title": "PoseAdherenceMatch",
+      "type": "object"
+    },
+    "PoseAdherenceRecord": {
+      "description": "Whether the released image holds the pose it was asked for, as argus-puppet's ``POST /adherence`` judged it.\n\nA measurement, never a verdict: it changes no outcome and is made only for an image that was already released\n(passed or review). It compares pose shape (the 17 body joints, hip-centred and torso-scaled), not where a figure\nstands in the frame, its size, hands or face. ``adheres`` is null, with ``error`` saying why, when the check\ncould not run; the image is released either way.",
+      "properties": {
+        "adheres": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Adheres"
+        },
+        "close": {
+          "default": 0,
+          "title": "Close",
+          "type": "integer"
+        },
+        "comparable": {
+          "default": 0,
+          "title": "Comparable",
+          "type": "integer"
+        },
+        "distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "estimator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PoseEstimatorRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "matched": {
+          "default": 0,
+          "title": "Matched",
+          "type": "integer"
+        },
+        "matches": {
+          "items": {
+            "$ref": "#/$defs/PoseAdherenceMatch"
+          },
+          "title": "Matches",
+          "type": "array"
+        },
+        "mean_distance": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mean Distance"
+        },
+        "output_people": {
+          "default": 0,
+          "title": "Output People",
+          "type": "integer"
+        },
+        "target_people": {
+          "default": 0,
+          "title": "Target People",
+          "type": "integer"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        }
+      },
+      "title": "PoseAdherenceRecord",
       "type": "object"
     },
     "PoseEstimatorRef": {
