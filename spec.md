@@ -38,7 +38,7 @@ One generation runs through these steps, and the user sees each one.
    - Unsafe under the enforcing policy on non-illegal rules only: **refused** in SFW mode, with the reason. In NSFW mode the verdict is shown as a warning and generation proceeds, and the output scan decides (see [Mode](#mode)).
    - Advisory policies that flag are shown, not acted on.
    - A failed check is a refusal, recorded as `unchecked`.
-3. **Input scan** (image-to-image and inpainting only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt. A pose photo is scanned the same way, and then read and drawn by argus-puppet (see [Pose input](#pose-input)).
+3. **Input scan** (image-to-image and inpainting only; see [Input image](#input-image)). The input image gets every check an output gets in step 5, and the outcome table in step 6, before anything reaches ComfyUI. It goes on only if that outcome is **passed**. Anything else refuses the attempt. A pose photo is scanned the same way, and then read by argus-puppet; a pose given as keypoints has nothing to scan. Either is then drawn by argus-puppet (see [Pose input](#pose-input)).
 4. **Generate.** ComfyUI renders with `SaveImageWebsocket`. The bytes come back over the websocket and are held in memory only. Darkroom then deletes the prompt from ComfyUI's history.
 5. **Scan.** For each selected policy, SingGuard judges the image twice: **isolated** (no text) and **with prompt** (the framed final prompt as the user turn). NudeNet scores the exposed classes once. If the age check is available, MiVOLO estimates an age for each detected face. Requests use the configured thinking mode, `cascade` by default. The age estimate is never sent to SingGuard as context: the isolated scan has to stay text-free, and the with-prompt scan measures the prompt alone.
 6. **Decide**, from the scans (see [Verdicts](#verdicts)): **passed**, **review** or **deleted**.
@@ -68,42 +68,52 @@ Inpainting is image-to-image with a mask: `init_image.mask_base64` (PNG, JPEG or
 
 ### Pose input
 
-A pose input (`pose`) steers a text-to-image generation into the body pose of a photo, through a pose ControlNet. It
-is the first use of argus-puppet's conditioning (argus-puppet#1, phase 4), and it is built so that the ControlNet can
-never be a second way in for a picture.
+A pose input (`pose`) steers a text-to-image generation into a body pose, through a pose ControlNet. It is the
+suite's use of argus-puppet's conditioning (argus-puppet#1, phase 4). It supports both halves of that: **extraction**
+(the request gives a photo and darkroom takes the pose from it) and **enforcement** (the request gives the pose
+itself). It is built so that the ControlNet can never be a second way in for a picture.
 
-- **The request carries the photo, and only the photo.** `pose.data_base64` has the init image's formats and limits.
-  A request cannot send a control image (any picture would do as one, and nobody would have checked it) or keypoints
-  (a pose from no checked photo). A pose chosen from a library is sent as that pose's source photo.
-- **The photo is an input image like any other.** It is decoded once into the PNG that is judged, as the init image
+- **Exactly one source.** `pose.data_base64` is a photo, with the init image's formats and limits. `pose.keypoints`
+  with `width` and `height` is the pose given directly: one person's 133 points or up to 20 people, in the shape of
+  argus-puppet's bare pose, so a library entry's fields fit as they are. Both or neither is a 422.
+- **Never a control image.** Any picture would do as one, and nobody would have checked it. There is no field for it.
+- **A photo is an input image like any other.** It is decoded once into the PNG that is judged, as the init image
   is, and after the text pre-flight it gets the same checks as an output, with the same rule: only `passed` goes on.
   Anything else is **refused**, `outcome_reason` `pose image: <the photo's reason>`, `critical` as the photo's own
-  decision says. Up to that point the photo has gone to the guards and nowhere else.
-- **argus-puppet reads it and draws it; darkroom does neither.** Once the photo has passed, puppet's `POST /pose`
-  returns every person's 133 whole-body keypoints (it writes nothing for that route), and `POST /render` draws them
-  in the OpenPose convention at the generation's size. Only numbers go into the drawing, so it cannot carry the
-  photo's appearance. Darkroom loads no pose model and draws no skeleton (the suite map gives both to puppet). The
-  URL comes from the settings only, that host is the only one called, and a redirect is not followed.
-- **Puppet's answers are checked, not trusted.** The keypoints must be 133 finite points per person, in the
-  `coco_wholebody_133` layout, about an image of the size that was sent. The drawing must be a PNG of exactly the
-  generation's size, with at most 256 distinct colours and more than one. The convention draws with about sixty flat
-  colours however many people there are; a photograph has thousands. So a puppet that answered with a picture,
-  through a fault or a compromise, cannot get it to the ControlNet. The drawing is re-encoded with no metadata.
+  decision says. Up to that point the photo has gone to the guards and nowhere else. Then puppet's `POST /pose`
+  returns every person's 133 whole-body keypoints (it writes nothing for that route).
+- **Keypoints are not scanned, because there is nothing to scan.** They are numbers. The reasoning is the mask's:
+  no imagery of their own. What a pose can do is place a figure, and what that produces is the output, which is
+  judged in full. Darkroom does not know where given keypoints came from. A caller may state the source image's
+  hash (`source_sha256`), which is recorded as stated and never verified; the age check on poses from real people
+  is the library's (`age_checked`), not darkroom's.
+- **argus-puppet draws; darkroom does not.** `POST /render` draws the keypoints in the OpenPose convention at the
+  generation's size. Only numbers go into the drawing, so it cannot carry a picture's appearance. Darkroom loads no
+  pose model and draws no skeleton (the suite map gives both to puppet). The URL comes from the settings only, that
+  host is the only one called, and a redirect is not followed.
+- **Puppet's answers are checked, not trusted.** Keypoints read from a photo must be 133 finite points per person,
+  in the `coco_wholebody_133` layout, about an image of the size that was sent. The drawing, whatever the source,
+  must be a PNG of exactly the generation's size, with at most 256 distinct colours and more than one. The
+  convention draws with about sixty flat colours however many people there are; a photograph has thousands. So a
+  puppet that answered with a picture, through a fault or a compromise, cannot get it to the ControlNet. The drawing
+  is re-encoded with no metadata.
 - **The drawing is not scanned.** Like an inpainting mask it has no imagery of its own: joint positions, in fixed
-  colours. What could be harmful is the photo, which was judged in full, and the output, which is judged as usual.
+  colours.
 - **A pose that cannot be read or drawn is a failure, not a refusal.** Nobody in the photo, a puppet that is down or
   busy, or an answer that fails the checks above: outcome **failed**, `outcome_reason` `pose: <why>`, nothing sent to
   ComfyUI. Darkroom never falls back to rendering without the pose.
-- **Never written.** The photo is held in memory and dropped. The drawing travels to ComfyUI as base64 inside the
+- **Never written.** A photo is held in memory and dropped. The drawing travels to ComfyUI as base64 inside the
   prompt graph, to `DarkroomLoadImageBase64`, and the `/history` delete removes it with the prompt. The record keeps
-  the photo's hashes and the skeleton itself (see [Record](#record)): keypoints are numbers, and with them the run
-  can be reproduced without the photo.
-- **No lease across the call.** Puppet is a GPU tenant of its own. Both calls are made before darkroom asks for the
+  a photo's hashes and the skeleton itself (see [Record](#record)): keypoints are numbers, and with them the run can
+  be reproduced without the photo.
+- **No lease across the call.** Puppet is a GPU tenant of its own. Its calls are made before darkroom asks for the
   render's lease, and the caller's priority is passed on.
 - **Templates by mode.** Pose templates are `<family>[+lora<N>]+pose.json`, with `$pose_image` (the one loader's
   `image`), `$controlnet` and `$pose_strength`, and none of the image-to-image slots: a request with both a pose and
   an init image is a 400 for now. The ControlNet file is found and hashed under the models root's `controlnet/` like
   a checkpoint.
+- **Not yet: checking that the output held the pose.** argus-puppet's `POST /adherence` compares a generated image's
+  pose with the one asked for. Darkroom does not call it yet; when it does, it will be for released images only.
 
 Other reference images (IP-Adapter and the like) are not supported.
 
@@ -218,10 +228,12 @@ GenerationRecord (record_version "1.0", wire schema committed)
     workflow_sha256, workflow (the template's name, e.g. "sdxl+lora1"), engine "comfyui", engine_version
     init_image: {sha256, phash, width, height, source_sha256, denoise, mask} | null   # image-to-image; never the pixels
       mask: {sha256, source_sha256, masked_fraction} | null                          # inpainting; never the pixels
-    pose: {sha256, phash, width, height, source_sha256,      # the pose photo's identity; never the pixels
+    pose: {source "photo" | "keypoints",
+           sha256, phash, width, height, source_sha256,      # a photo's identity, never its pixels; for keypoints
+                                                             # the stated frame, null hashes, the stated source hash
            controlnet: ModelRef, strength, body, hands, face, primary_only, fit,
            layout "coco_wholebody_133", people: [{keypoints: 133 x (x, y, score), primary}],   # the skeleton
-           estimator: {package_version, wire_version, detector: ModelRef, pose: ModelRef} | null,   # argus-puppet
+           estimator: {package_version, wire_version, detector: ModelRef, pose: ModelRef} | null,   # argus-puppet; null for keypoints
            control: {sha256, width, height} | null} | null   # the drawing ComfyUI got
   guard
     enforcing_policy, advisory_policies, thinking
@@ -231,7 +243,7 @@ GenerationRecord (record_version "1.0", wire schema committed)
     age: {source "mivolo", faces: [{age_estimate_years, bbox}], people: [{bbox, age_estimate_years | null, face_index | null}],
           minor_exposed, minor_exposed_rule "frame" | "overlap"} | null   # tool estimate
     input: {scans, nudenet, age, outcome, reason} | null   # the input image's own scan (image-to-image)
-    pose_input: {scans, nudenet, age, outcome, reason} | null   # the pose photo's own scan
+    pose_input: {scans, nudenet, age, outcome, reason} | null   # the pose photo's own scan; null for keypoints
   image
     sha256, phash, width, height      # always, including when deleted
     path                              # only when passed or review
@@ -242,7 +254,7 @@ A deleted record has no pixels, thumbnail or preview of any kind; those would be
 ## What it does not do
 
 - **Write anything before the verdict.** No temporary file, no cortex blob or lineage write, no `SaveImage` or `PreviewImage` node. A workflow that contains a node that writes to disk is refused when it is loaded, not when it runs.
-- **Reference images** (IP-Adapter and the like). Each is another picture that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image). An inpainting mask is not a picture, so it needs none: see [Inpainting](#inpainting). A pose photo has one too, and only its skeleton is rendered from: see [Pose input](#pose-input).
+- **Reference images** (IP-Adapter and the like). Each is another picture that would need its own pre-flight. Image-to-image has one: see [Input image](#input-image). An inpainting mask is not a picture, so it needs none: see [Inpainting](#inpainting). A pose photo has one too, and only a skeleton drawing is rendered from, never a picture: see [Pose input](#pose-input).
 - **Training, captioning or scoring against a dataset.** Those are forge, lens and proof.
 - **Accept policy text in a request.** Policies are chosen by name only.
 - **Public hosting.** Not planned in the short or medium term. The server binds to localhost by default.
@@ -288,7 +300,7 @@ No real sexual, violent or illegal content goes in the repo or the tests.
 - A test that a deleted or omitted outcome leaves no bytes anywhere: the output root, the system temp directory and the fake ComfyUI history. The test lists all three before and after.
 - A test that a workflow containing a disk-writing node is refused at load.
 - Image-to-image: an input refused for each reason (illegal, flagged under SFW, exposed under SFW, minor-exposed, SingGuard or NudeNet unreachable) reaches no part of ComfyUI and leaves no bytes, listed as above; a text refusal comes first and the input is never scanned.
-- Pose input, against a fake argus-puppet: a photo refused for each reason reaches neither puppet nor ComfyUI and leaves no bytes; a passed photo's bytes are in nothing ComfyUI receives; a drawing that is a picture, the wrong size or blank, keypoints from another frame, a redirect and every puppet error fail the run before ComfyUI; a request with a control image or keypoints of its own is refused.
+- Pose input, against a fake argus-puppet: a photo refused for each reason reaches neither puppet nor ComfyUI and leaves no bytes; a passed photo's bytes are in nothing ComfyUI receives; a drawing that is a picture, the wrong size or blank, keypoints from another frame, a redirect and every puppet error fail the run before ComfyUI; a pose given as keypoints runs no input scan and no `/pose` call and its drawing gets the same checks; a request with a control image of its own, or with both a photo and keypoints, is refused.
 - Inpainting: the input is scanned exactly as for image-to-image and the mask reaches no guard; a refused input with a mask reaches no part of ComfyUI and the mask's bytes are in no file; a mask of the wrong size, that does not decode, or that masks nothing is a 400 before any check.
 - Mode tests:
   - `default` and `sfw-*` names are SFW, and everything else is NSFW.

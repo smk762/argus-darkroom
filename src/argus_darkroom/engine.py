@@ -12,8 +12,9 @@ history after the run.
 An inpainting mask travels the same way and is never written either, but it is not scanned: it only says which
 pixels of the checked input are repainted, and carries no imagery. The output is scanned and decided as usual.
 
-A pose input is a photo, and gets the input image's checks too. Once it has passed, argus-puppet reads its keypoints
-and draws the skeleton (:mod:`argus_darkroom.puppet`); the drawing is what ComfyUI gets, and the photo goes no
+A pose input is a photo or keypoints. A photo gets the input image's checks too; once it has passed, argus-puppet
+reads its keypoints. Keypoints given in the request are numbers, with nothing to scan. Either way argus-puppet draws
+the skeleton (:mod:`argus_darkroom.puppet`); the drawing is what ComfyUI gets, and the photo goes no
 further. Both calls are made before the render's GPU lease is asked for, so no lease is held across them.
 
 The render and the prompt expansion each hold a GPU lease (:mod:`argus_darkroom.gpu`) for as long as ComfyUI or
@@ -66,6 +67,7 @@ from argus_darkroom.models import (
     ModelRef,
     NudeNetBox,
     NudeNetRecord,
+    Outcome,
     PoseEstimatorRef,
     PosePerson,
     PoseRef,
@@ -123,7 +125,8 @@ class Prepared:
     denoise: float | None = None
     # Inpainting: the mask, decoded and held in memory only. Never scanned: it carries no imagery.
     mask: InputMask | None = None
-    # Pose: the photo the pose comes from, decoded and held in memory only, and the ControlNet. None without one.
+    # Pose: the ControlNet (set for every pose request), and the photo the pose comes from, decoded and held in memory
+    # only (None when the request gave keypoints, which stay in the request).
     pose: InputImage | None = None
     controlnet: ModelRef | None = None
 
@@ -151,11 +154,12 @@ class Prepared:
 
 @dataclass(frozen=True)
 class PoseControl:
-    """A checked pose photo's skeleton: the people argus-puppet found that are drawn, what read them, and the drawing
+    """A pose's skeleton: the people that are drawn (read from a checked photo by argus-puppet, or the request's own
+    keypoints), what read them (None for given keypoints), and the drawing
     ComfyUI gets. Made only after the photo passed its scan (:meth:`Engine.pose_control`)."""
 
     people: tuple[PosePerson, ...]
-    estimator: PoseEstimatorRef
+    estimator: PoseEstimatorRef | None
     image: ControlImage
 
 
@@ -389,13 +393,20 @@ class Engine:
                     "a pose input needs a ControlNet: name one in the request (pose.controlnet) or set "
                     "ARGUS_DARKROOM_POSE_CONTROLNET"
                 )
-            try:
-                pose = load_input(request.pose.data_base64, "the pose image")
-            except UnreadableImage as exc:
-                raise RequestError(str(exc)) from exc
+            if request.pose.data_base64 is not None:
+                try:
+                    pose = load_input(request.pose.data_base64, "the pose image")
+                except UnreadableImage as exc:
+                    raise RequestError(str(exc)) from exc
             controlnet = self.models.ref("controlnet", name)
         mode: Mode = (
-            "pose" if pose is not None else "txt2img" if init is None else "img2img" if mask is None else "inpaint"
+            "pose"
+            if controlnet is not None
+            else "txt2img"
+            if init is None
+            else "img2img"
+            if mask is None
+            else "inpaint"
         )
         try:
             workflow = self.workflows.select(request.checkpoint, len(request.loras), mode)
@@ -426,7 +437,7 @@ class Engine:
         """The values that fill the template. Without *control* a pose request's ``$pose_image`` is empty: enough to
         check the template's slots when the request is prepared, and never sent (:meth:`render` insists on one)."""
         assert request.sampling is not None  # prepare() checked
-        posed = prepared.pose is not None and request.pose is not None
+        posed = prepared.controlnet is not None and request.pose is not None
         return RenderParams(
             pose_image=(control.image.base64 if control is not None else "") if posed else None,
             controlnet=prepared.controlnet.name if posed and prepared.controlnet else None,
@@ -457,7 +468,8 @@ class Engine:
         """Generate the image for *request* and hold the PNG in memory.
 
         Call it only after pre-flight let the request through, and after an input image passed its scan
-        (:meth:`check_input`). A pose request also needs its photo's passed scan (*pose_scan*) and the skeleton drawn
+        (:meth:`check_input`). A pose request also needs its photo's passed scan (*pose_scan*), if it has a photo, and
+        the skeleton drawn
         from it (*control*, from :meth:`pose_control`). The final prompt is the one that was checked: it is built by :meth:`final_prompt`, the
         same function pre-flight used.
 
@@ -473,7 +485,8 @@ class Engine:
             # Not reachable through generate(), which never renders an input that did not pass. A direct caller gets
             # the same rule: an input image reaches ComfyUI only after its own scan passed.
             raise RequestError("an input image is rendered only after its scan passed (Engine.check_input)")
-        if prepared.pose is not None and (pose_scan is None or pose_scan.outcome != "passed" or control is None):
+        photo_unchecked = prepared.pose is not None and (pose_scan is None or pose_scan.outcome != "passed")
+        if prepared.controlnet is not None and (photo_unchecked or control is None):
             # The same rule for a pose photo: nothing is drawn from one that did not pass, and nothing is rendered
             # without the drawing.
             raise RequestError(
@@ -575,28 +588,44 @@ class Engine:
 
     @staticmethod
     def _pose_ref(request: GenerateRequest, prepared: Prepared, control: PoseControl | None = None) -> PoseRef | None:
-        """The record's pose: the photo by its hashes, and the skeleton once *control* exists."""
-        if prepared.pose is None or prepared.controlnet is None or request.pose is None:
+        """The record's pose: a photo by its hashes or the request's keypoints, and the drawing once *control* exists."""
+        if prepared.controlnet is None or request.pose is None:
             return None
+        asked = request.pose
+        drawn = {
+            "controlnet": prepared.controlnet,
+            "strength": asked.strength,
+            "body": asked.body,
+            "hands": asked.hands,
+            "face": asked.face,
+            "primary_only": asked.primary_only,
+            "fit": asked.fit,
+            "control": None
+            if control is None
+            else ControlImageRef(sha256=control.image.sha256, width=control.image.width, height=control.image.height),
+        }
+        if prepared.pose is None:  # keypoints: they are the request's own, known before anything is drawn
+            assert asked.width is not None and asked.height is not None  # PoseInput checked
+            people = asked.people()
+            return PoseRef(
+                source="keypoints",
+                width=asked.width,
+                height=asked.height,
+                source_sha256=asked.source_sha256,
+                people=list(people[:1] if asked.primary_only else people),
+                **drawn,
+            )
         photo = prepared.pose.record
         return PoseRef(
+            source="photo",
             sha256=photo.sha256,
             phash=photo.phash,
             width=photo.width,
             height=photo.height,
             source_sha256=prepared.pose.source_sha256,
-            controlnet=prepared.controlnet,
-            strength=request.pose.strength,
-            body=request.pose.body,
-            hands=request.pose.hands,
-            face=request.pose.face,
-            primary_only=request.pose.primary_only,
-            fit=request.pose.fit,
             people=list(control.people) if control is not None else [],
             estimator=control.estimator if control is not None else None,
-            control=None
-            if control is None
-            else ControlImageRef(sha256=control.image.sha256, width=control.image.width, height=control.image.height),
+            **drawn,
         )
 
     def _verify_outputs(self, workflow: Workflow, comfyui: ComfyUIClient) -> None:
@@ -717,35 +746,37 @@ class Engine:
     def pose_control(
         self, request: GenerateRequest, prepared: Prepared, priority: PriorityClass = gpu.DEFAULT_PRIORITY
     ) -> PoseControl:
-        """Read the pose photo's keypoints and have them drawn at the generation's size, both by argus-puppet.
+        """The skeleton a pose request renders from, drawn by argus-puppet at the generation's size.
 
-        Call it only after the photo passed its scan (:meth:`check_input`): this is the first time the photo leaves
-        darkroom for anything but a guard. Only keypoints go into the drawing, and what comes back is checked to be a
-        drawing (``images.load_control``), so the ControlNet never sees the photo.
+        For a photo, call it only after the photo passed its scan (:meth:`check_input`): puppet first reads the
+        people's keypoints from it, and this is the first time the photo leaves darkroom for anything but a guard.
+        Given keypoints are drawn as they are. Only keypoints go into the drawing, and what comes back is checked to
+        be a drawing (``images.load_control``), so the ControlNet never sees a picture.
 
         Raises :class:`PoseUnavailable` (puppet did not answer usefully, or found nobody) or :class:`UnreadableImage`
         (what it drew is not a skeleton of the generation's size).
         """
-        assert prepared.pose is not None and request.pose is not None and request.sampling is not None
+        assert prepared.controlnet is not None and request.pose is not None and request.sampling is not None
         if self.puppet is None:
             raise PoseUnavailable("argus-puppet is not configured")
-        photo = prepared.pose.record
-        frame = (photo.width, photo.height)
-        read = self.puppet.read(prepared.pose.png, frame, priority)
-        people = read.drawn(request.pose.primary_only)
-        if not people:
-            raise PoseUnavailable("argus-puppet found nobody in the pose image")
+        asked = request.pose
+        estimator: PoseEstimatorRef | None = None
+        if prepared.pose is not None:
+            photo = prepared.pose.record
+            frame = (photo.width, photo.height)
+            read = self.puppet.read(prepared.pose.png, frame, priority)
+            people, estimator = read.drawn(asked.primary_only), read.estimator
+            if not people:
+                raise PoseUnavailable("argus-puppet found nobody in the pose image")
+        else:
+            assert asked.width is not None and asked.height is not None  # PoseInput checked
+            frame = (asked.width, asked.height)
+            people = asked.people()[:1] if asked.primary_only else asked.people()
         canvas = (request.sampling.width, request.sampling.height)
         drawing = self.puppet.draw(
-            people,
-            frame,
-            canvas,
-            body=request.pose.body,
-            hands=request.pose.hands,
-            face=request.pose.face,
-            fit=request.pose.fit,
+            people, frame, canvas, body=asked.body, hands=asked.hands, face=asked.face, fit=asked.fit
         )
-        return PoseControl(people=people, estimator=read.estimator, image=load_control(drawing, canvas))
+        return PoseControl(people=people, estimator=estimator, image=load_control(drawing, canvas))
 
     # -- the whole flow ---------------------------------------------------------------------------------
 
@@ -860,24 +891,27 @@ class Engine:
                 return record
 
         # A pose photo is an input image too: the same checks, before it reaches argus-puppet or anything else, and
-        # only `passed` goes on. Then puppet reads the people's keypoints and draws them. The photo stops here: the
-        # drawing is all ComfyUI gets. Neither is written.
+        # only `passed` goes on; then puppet reads the people's keypoints. A pose given as keypoints has no photo and
+        # nothing to scan. Either way puppet draws the keypoints, and the drawing is all ComfyUI gets. Nothing is
+        # written.
         control: PoseControl | None = None
-        if prepared.pose is not None:
-            guard_record.pose_input, verdict = self.check_input(
-                request,
-                prepared.pose,
-                pre.framed,
-                on_cell=lambda policy, context, cell: send(
-                    "pose_scan", {"policy": policy, "context": context, "cell": cell}
-                ),
-            )
+        if prepared.controlnet is not None:
             failure: str | None = None
-            if verdict.outcome != "passed":
-                outcome, critical = "refused", verdict.critical
-                failure = POSE_REFUSAL + (verdict.reason or verdict.outcome)
-            else:
-                outcome, critical = "failed", False
+            outcome: Outcome = "failed"
+            critical = False
+            if prepared.pose is not None:
+                guard_record.pose_input, verdict = self.check_input(
+                    request,
+                    prepared.pose,
+                    pre.framed,
+                    on_cell=lambda policy, context, cell: send(
+                        "pose_scan", {"policy": policy, "context": context, "cell": cell}
+                    ),
+                )
+                if verdict.outcome != "passed":
+                    outcome, critical = "refused", verdict.critical
+                    failure = POSE_REFUSAL + (verdict.reason or verdict.outcome)
+            if failure is None:
                 try:
                     control = self.pose_control(request, prepared, priority)
                 except (PoseUnavailable, UnreadableImage) as exc:

@@ -1,10 +1,11 @@
 """argus-puppet over HTTP: the keypoints of a pose photo, and the skeleton drawn from them.
 
-A pose input is a photo. Once it has passed its own scan (never before), darkroom asks argus-puppet two things:
+A pose input is a photo or keypoints. Darkroom asks argus-puppet two things:
 
-* ``POST /pose``: every person's whole-body keypoints in the photo. Puppet writes nothing for this route.
-* ``POST /render``: those keypoints drawn as an OpenPose-convention control image at the generation's size. Only
-  numbers go in, so the drawing cannot carry any of the photo's appearance.
+* ``POST /pose``, for a photo only, once it has passed its own scan (never before): every person's whole-body
+  keypoints in it. Puppet writes nothing for this route.
+* ``POST /render``: keypoints (read from the photo, or the request's own) drawn as an OpenPose-convention control
+  image at the generation's size. Only numbers go in, so the drawing cannot carry any picture's appearance.
 
 Darkroom draws no skeleton itself and loads no pose model: both are puppet's. The URL comes from the settings only
 (``ARGUS_DARKROOM_PUPPET_URL``, then the suite-wide ``ARGUS_PUPPET_URL``), that one host is the only one called, and

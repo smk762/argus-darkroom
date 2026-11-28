@@ -458,17 +458,13 @@ def test_a_request_without_a_pose_does_not_use_the_pose_template(rig) -> None:
         rig.engine().begin(rig.request())  # the rig's one template is a pose template
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        {"control_image": "aGVsbG8="},  # a caller's own control image would be a picture nobody checked
-        {"keypoints": [[0, 0, 1]] * 133},  # and its own keypoints a pose from no checked photo
-        {"image_base64": "aGVsbG8="},
-    ],
-)
-def test_a_request_cannot_carry_its_own_control_image_or_keypoints(extra) -> None:
+@pytest.mark.parametrize("field", ["control_image", "image_base64", "control", "png"])
+@pytest.mark.parametrize("source", ["photo", "keypoints"])
+def test_a_request_cannot_carry_its_own_control_image(field, source) -> None:
+    """Any picture would do as a control image, and nobody would have checked it: there is no field for one."""
+    given = pose() if source == "photo" else keypoints_pose()
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        GenerateRequest(**BODY | {"pose": pose() | extra})
+        GenerateRequest(**BODY | {"pose": given | {field: "aGVsbG8="}})
 
 
 @pytest.mark.parametrize(
@@ -485,6 +481,9 @@ def test_a_request_cannot_carry_its_own_control_image_or_keypoints(extra) -> Non
 def test_pose_options_are_validated(bad) -> None:
     with pytest.raises(ValidationError):
         PoseInput(**pose() | bad)
+    if "data_base64" not in bad:
+        with pytest.raises(ValidationError):
+            PoseInput(**keypoints_pose() | bad)
 
 
 def test_the_photo_never_shows_in_a_repr(rig) -> None:
@@ -493,6 +492,122 @@ def test_the_photo_never_shows_in_a_repr(rig) -> None:
     for text in (repr(request), str(request.pose), repr(prepared)):
         assert CANONICAL_B64 not in text and base64.b64encode(UPLOAD).decode() not in text
     assert "base64 chars" in repr(request.pose)
+
+
+# --- a pose given as keypoints: nothing to scan, the same drawing checks ---------------------------------------
+
+POINTS = fake_person(30.0)["keypoints"]
+OTHER = fake_person(60.0)["keypoints"]
+
+
+def keypoints_pose(people=None, **kw) -> dict:
+    return {"keypoints": POINTS if people is None else people, "width": 200, "height": 300, **kw}
+
+
+def test_keypoints_are_drawn_as_given_with_no_photo_and_nothing_to_scan(rig) -> None:
+    stated = "d" * 64
+    record = rig.generate(rig.engine(), pose=keypoints_pose(strength=0.9, source_sha256=stated))
+    assert record.outcome == "passed"
+
+    assert rig.puppet.calls == ["POST /render"] and rig.puppet.posed == []  # puppet reads no image: there is none
+    (drawn,) = rig.puppet.renders
+    assert drawn["pose"] == {"keypoints": [POINTS], "width": 200, "height": 300}
+    assert drawn["options"]["width"] == 64 and drawn["options"]["fit"] == "contain"
+    # the only images a guard sees are the output's: two SingGuard scans, one NudeNet call
+    assert sum(is_image_scan(b) for b in rig.singguard.requests) == 2 and rig.nudenet.calls == 1
+    kinds_seen = [k for k, _ in rig.events]
+    assert kinds_seen[:3] == ["preflight", "pose", "queued"] and "pose_scan" not in kinds_seen
+
+    control = load_control(skeleton_png(CANVAS), CANVAS)
+    loader = next(n for n in rig.comfyui.graphs[0].values() if n["class_type"] == "DarkroomLoadImageBase64")
+    assert loader["inputs"]["image"] == control.base64
+
+    ref = record.request.pose
+    assert ref.source == "keypoints" and ref.sha256 is None and ref.phash is None and ref.estimator is None
+    assert (ref.width, ref.height, ref.strength, ref.source_sha256) == (200, 300, 0.9, stated)
+    assert [p.model_dump(mode="json") for p in ref.people] == [{"keypoints": POINTS, "primary": True}]
+    assert ref.control.sha256 == control.sha256 and ref.controlnet.name == "openpose.safetensors"
+    assert record.guard.pose_input is None  # no photo, so no input scan
+    assert record.request.workflow == "sdxl+lora1+pose"
+    assert rig.engine().store.load(record.id) == record
+
+
+def test_a_photo_record_says_its_source_is_a_photo(rig) -> None:
+    ref = rig.generate(rig.engine(), pose=pose()).request.pose
+    assert ref.source == "photo" and ref.sha256 and ref.estimator is not None
+
+
+def test_keypoints_may_be_one_person_or_a_list_and_the_first_is_primary(rig) -> None:
+    record = rig.generate(rig.engine(), pose=keypoints_pose([POINTS, OTHER]))
+    assert rig.puppet.renders[0]["pose"]["keypoints"] == [POINTS, OTHER]
+    assert [p.primary for p in record.request.pose.people] == [True, False]
+    record = rig.generate(rig.engine(), pose=keypoints_pose([POINTS, OTHER], primary_only=True, face=False))
+    assert rig.puppet.renders[1]["pose"]["keypoints"] == [POINTS]
+    assert rig.puppet.renders[1]["options"]["face"] is False
+    assert len(record.request.pose.people) == 1 and record.request.pose.primary_only
+
+
+def test_the_drawing_from_keypoints_is_checked_like_any_other(rig) -> None:
+    rig.puppet.drawing = noise_png()
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "failed" and f"more than {MAX_CONTROL_COLOURS} colours" in record.outcome_reason
+    assert rig.comfyui.graphs == [] and record.request.pose.control is None
+    assert record.request.pose.people[0].keypoints[0] == tuple(POINTS[0])  # the skeleton asked for is still recorded
+
+
+def test_a_puppet_failure_with_keypoints_fails_the_run_and_never_renders_without_the_pose(rig) -> None:
+    rig.puppet.render_status = 503
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "failed" and record.outcome_reason.startswith("pose: argus-puppet answered HTTP 503")
+    assert rig.comfyui.graphs == []
+
+
+def test_a_text_refusal_with_keypoints_reaches_nothing(rig) -> None:
+    rig.singguard.responder = lambda body: (200, FLAG_B)
+    record = rig.generate(rig.engine(), pose=keypoints_pose())
+    assert record.outcome == "refused" and rig.puppet.calls == [] and rig.comfyui.graphs == []
+    assert record.request.pose.source == "keypoints" and len(record.request.pose.people) == 1
+
+
+def test_engine_render_will_not_render_keypoints_without_their_drawing(rig) -> None:
+    with pytest.raises(RequestError, match="skeleton was drawn"):
+        rig.engine().render(rig.request(pose=keypoints_pose()))
+    assert rig.comfyui.graphs == []
+
+
+def test_keypoints_need_puppet_a_controlnet_and_a_pose_template_too(rig) -> None:
+    rig.settings = replace(rig.settings, puppet_url="")
+    refused_before_anything(rig, "needs argus-puppet", pose=keypoints_pose())
+    rig.settings = replace(rig.settings, puppet_url=rig.puppet.url, workflow=EXAMPLES / "sdxl+lora1.json")
+    refused_before_anything(rig, "no pose workflow renders this checkpoint", pose=keypoints_pose())
+
+
+@pytest.mark.parametrize(
+    ("given", "why"),
+    [
+        (pose() | {"keypoints": POINTS, "width": 200, "height": 300}, "exactly one of a photo"),
+        ({"strength": 0.8}, "exactly one of a photo"),
+        ({"keypoints": POINTS}, "need the width and height"),
+        ({"keypoints": POINTS, "width": 200}, "need the width and height"),
+        (pose() | {"width": 200, "height": 300}, "width and height go with keypoints"),
+        (pose() | {"source_sha256": "d" * 64}, "source_sha256 goes with keypoints"),
+        (keypoints_pose(POINTS[:132]), None),  # not 133 points
+        (keypoints_pose([[0.0, 0.0, float("nan")]] * 133), None),
+        (keypoints_pose([[0.0, 0.0, float("inf")]] * 133), None),
+        (keypoints_pose([POINTS] * (MAX_POSE_PEOPLE + 1)), None),
+        (keypoints_pose([]), None),
+        (keypoints_pose(width=0), None),
+        (keypoints_pose(height=70000), None),
+        (keypoints_pose(source_sha256="not-a-hash"), None),
+    ],
+)
+def test_a_pose_is_one_source_and_well_formed(given, why) -> None:
+    with pytest.raises(ValidationError, match=why):
+        PoseInput(**given)
+
+
+def test_keypoints_show_as_a_count_in_a_repr() -> None:
+    assert "2 people" in repr(PoseInput(**keypoints_pose([POINTS, OTHER])))
 
 
 # --- the control image check and the client, on their own -----------------------------------------------------
@@ -602,6 +717,12 @@ def test_the_stream_reports_the_photos_scan_and_the_pose(rig) -> None:
     record = events[-1][1]["record"]
     assert record["outcome"] == "passed" and len(record["request"]["pose"]["people"][0]["keypoints"]) == 133
     assert CANONICAL_B64 not in json.dumps(events)  # no event carries the photo
+
+
+def test_the_stream_takes_keypoints_and_has_no_pose_scan(rig) -> None:
+    events = stream_events(client(rig), {"pose": keypoints_pose()})
+    assert [k for k, _ in events][:3] == ["preflight", "pose", "queued"]
+    assert events[-1][1]["record"]["request"]["pose"]["source"] == "keypoints"
 
 
 def test_a_pose_request_that_cannot_be_served_is_a_400(rig) -> None:

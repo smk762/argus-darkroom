@@ -134,31 +134,39 @@ class ControlImageRef(BaseModel):
 
 
 class PoseRef(BaseModel):
-    """A pose input: the identity of the photo the pose came from, never its pixels, and the skeleton read from it.
+    """A pose input: where the pose came from, the skeleton, and what was drawn from it. Never a pixel.
 
-    The hashes and size are of the photo as darkroom judged it and sent it to argus-puppet: decoded, turned upright,
-    made RGB and re-encoded as a PNG with no metadata. ``source_sha256`` is of the bytes the caller sent. The photo
-    reaches no part of ComfyUI: only the skeleton drawn from ``people`` does (``control``).
+    ``source`` is ``photo`` when darkroom took the pose from a photo it checked. ``sha256``, ``phash``, ``width`` and
+    ``height`` are then of the photo as darkroom judged it and sent it to argus-puppet (decoded, turned upright, made
+    RGB and re-encoded as a PNG with no metadata), ``source_sha256`` is of the bytes the caller sent, and ``people``
+    and ``estimator`` are what argus-puppet read from it.
 
-    ``people``, ``estimator`` and ``control`` are filled once the photo passed its scan and argus-puppet answered;
-    on a record refused or failed before that they are empty and null.
+    ``source`` is ``keypoints`` when the request gave the pose directly. There was no photo: ``sha256`` and ``phash``
+    are null, ``width`` and ``height`` are the frame the request stated, ``people`` are the request's keypoints,
+    ``estimator`` is null, and ``source_sha256`` is the image the caller says they came from, if it said (never seen
+    or verified by darkroom).
+
+    Only the skeleton drawn from ``people`` reaches ComfyUI (``control``). For a photo, ``people``, ``estimator`` and
+    ``control`` are filled once it passed its scan and argus-puppet answered; on a record refused or failed before
+    that they are empty and null.
     """
 
-    sha256: Sha256
-    phash: str
+    source: Literal["photo", "keypoints"] = "photo"
+    sha256: Sha256 | None = None
+    phash: str | None = None
     width: int = Field(gt=0)
     height: int = Field(gt=0)
-    source_sha256: Sha256
+    source_sha256: Sha256 | None = None
     controlnet: ModelRef
     strength: float
-    # What was drawn, and how the photo's frame was fitted to the generation's.
+    # What was drawn, and how the pose's frame was fitted to the generation's.
     body: bool = True
     hands: bool = True
     face: bool = True
     primary_only: bool = False
     fit: str = "contain"
     layout: str = POSE_LAYOUT
-    # The people that were drawn: everyone argus-puppet found (at most MAX_POSE_PEOPLE), or the primary subject alone.
+    # The people that were drawn: everyone (at most MAX_POSE_PEOPLE), or the primary subject alone.
     people: list[PosePerson] = Field(default_factory=list)
     estimator: PoseEstimatorRef | None = None
     control: ControlImageRef | None = None
@@ -297,8 +305,8 @@ class GuardRecord(BaseModel):
     # The image-to-image input's scan. null for text-to-image, and when pre-flight refused before the input was
     # scanned.
     input: InputScanRecord | None = None
-    # The pose photo's scan, the same checks again. null without a pose input, and when pre-flight refused before the
-    # photo was scanned.
+    # The pose photo's scan, the same checks again. null without a pose input, for a pose given as keypoints (there is
+    # no photo to scan), and when pre-flight refused before the photo was scanned.
     pose_input: InputScanRecord | None = None
 
 

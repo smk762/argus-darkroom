@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from argus_cortex.moderation import THINKING_MODES
 from argus_cortex.moderation import policies as policy_table
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, field_validator, model_validator
 
-from argus_darkroom.models import SamplingParams
+from argus_darkroom.models import MAX_POSE_PEOPLE, POSE_KEYPOINTS, PosePerson, SamplingParams
 
 MAX_CLIP_SKIP = 12  # CLIP-L's layers
 MIN_DENOISE = 0.05  # below this the output would be little more than the input
@@ -16,6 +16,7 @@ MAX_POSE_STRENGTH = 2.0  # ComfyUI's own ceiling is higher; past 2 a ControlNet 
 # How the pose photo's frame maps onto the generation canvas (argus-puppet's RenderOptions.fit, less `stretch`, which
 # distorts the skeleton).
 PoseFit = Literal["contain", "cover", "skeleton"]
+MAX_POSE_FRAME = 65535  # the largest frame argus-puppet draws keypoints from
 
 
 class RequestError(ValueError):
@@ -58,19 +59,43 @@ class InitImage(BaseModel):
     __str__ = __repr__
 
 
-class PoseInput(BaseModel):
-    """A pose input: a photo whose body pose steers the generation through a pose ControlNet.
+# One person's keypoints: 133 (x, y, score) points in the COCO-WholeBody order, as argus-puppet reports them.
+PoseKeypoints = Annotated[
+    list[tuple[FiniteFloat, FiniteFloat, FiniteFloat]], Field(min_length=POSE_KEYPOINTS, max_length=POSE_KEYPOINTS)
+]
 
-    The photo is an input image like any other. It gets the same image checks as an output before anything else sees
-    it, and goes on only when it passes. Then argus-puppet reads the people's keypoints from it and draws them as an
-    OpenPose-convention skeleton at the generation size, and that drawing is all ComfyUI gets: no pixel of the photo
-    reaches the render. A request cannot send a control image or keypoints of its own: the skeleton always comes from
-    a photo darkroom checked. The photo is never written; the record keeps its hashes and the skeleton."""
+
+class PoseInput(BaseModel):
+    """A pose input: a body pose that steers the generation through a pose ControlNet. It is given one of two ways.
+
+    **A photo** (``data_base64``): darkroom extracts the pose. The photo is an input image like any other. It gets
+    the same image checks as an output before anything else sees it, and goes on only when it passes. Then
+    argus-puppet reads the people's keypoints from it.
+
+    **Keypoints** (``keypoints`` with their frame ``width`` x ``height``): the pose is given directly, for example a
+    pose from an argus-puppet library or one a tool built. There is no photo, so there is nothing to scan: keypoints
+    are numbers, not imagery.
+
+    Either way argus-puppet draws the keypoints as an OpenPose-convention skeleton at the generation size, darkroom
+    checks that what came back is a drawing, and that drawing is all ComfyUI gets. The output is scanned and decided
+    as usual. A request can never send a control image: any picture would do as one, and nobody would have checked
+    it. A photo is never written; the record keeps its hashes and the skeleton."""
 
     model_config = ConfigDict(extra="forbid")
 
-    # PNG, JPEG or WebP bytes, base64. Checked when the request is prepared (HTTP 400): see ``images.load_input``.
-    data_base64: str = Field(min_length=1)
+    # A photo to take the pose from: PNG, JPEG or WebP bytes, base64. Checked when the request is prepared (HTTP
+    # 400): see ``images.load_input``. Exactly one of this and ``keypoints``.
+    data_base64: str | None = Field(default=None, min_length=1)
+    # The pose itself: one person's 133 points, or a list of people (at most MAX_POSE_PEOPLE), in a frame of
+    # ``width`` x ``height`` pixels. The shape of argus-puppet's bare pose, so a library entry's fields fit as they are.
+    keypoints: (
+        PoseKeypoints | Annotated[list[PoseKeypoints], Field(min_length=1, max_length=MAX_POSE_PEOPLE)] | None
+    ) = None
+    width: int | None = Field(default=None, ge=1, le=MAX_POSE_FRAME)
+    height: int | None = Field(default=None, ge=1, le=MAX_POSE_FRAME)
+    # With keypoints only: the sha256 of the image they came from, as the caller states it (a library entry's
+    # ``source_sha256``). Recorded for tracing; darkroom never sees that image and cannot verify it.
+    source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     # The ControlNet file, as ComfyUI loads it (a path under ``controlnet/``). None: the server's default
     # (``ARGUS_DARKROOM_POSE_CONTROLNET``).
     controlnet: str | None = Field(default=None, min_length=1)
@@ -80,18 +105,38 @@ class PoseInput(BaseModel):
     body: bool = True
     hands: bool = True
     face: bool = True
-    # Draw only the photo's primary subject (argus-puppet's choice) instead of everyone in it.
+    # Draw only the primary subject (argus-puppet's choice in a photo; the first person of given keypoints) instead
+    # of everyone.
     primary_only: bool = False
     fit: PoseFit = "contain"
 
     @model_validator(mode="after")
-    def _draws_something(self) -> PoseInput:
+    def _one_source_and_something_drawn(self) -> PoseInput:
+        if (self.data_base64 is None) == (self.keypoints is None):
+            raise ValueError("a pose input is exactly one of a photo (data_base64) and keypoints")
+        if self.keypoints is not None and (self.width is None or self.height is None):
+            raise ValueError("keypoints need the width and height of the frame they are in")
+        if self.data_base64 is not None and not (self.width is None and self.height is None):
+            raise ValueError("width and height go with keypoints: a photo has its own size")
+        if self.data_base64 is not None and self.source_sha256 is not None:
+            raise ValueError("source_sha256 goes with keypoints: a photo is hashed by darkroom")
         if not (self.body or self.hands or self.face):
             raise ValueError("a pose input draws at least one of body, hands and face")
         return self
 
+    def people(self) -> tuple[PosePerson, ...]:
+        """The given keypoints as people, the first one primary. Empty for a photo."""
+        if self.keypoints is None:
+            return ()
+        one = isinstance(self.keypoints[0][0], (int, float))  # a person is a list of points; a point of numbers
+        listed = [self.keypoints] if one else self.keypoints
+        return tuple(PosePerson(keypoints=person, primary=i == 0) for i, person in enumerate(listed))
+
     def __repr__(self) -> str:  # never the pixels, in a log or a traceback
-        return f"PoseInput(<{len(self.data_base64)} base64 chars>, strength={self.strength}, fit={self.fit!r})"
+        given = (
+            f"{len(self.people())} people" if self.data_base64 is None else f"<{len(self.data_base64)} base64 chars>"
+        )
+        return f"PoseInput({given}, strength={self.strength}, fit={self.fit!r})"
 
     __str__ = __repr__
 
@@ -115,7 +160,7 @@ class GenerateRequest(BaseModel):
     nsfw_threshold: float = Field(default=0.2, ge=0.0, le=1.0)
     # Image-to-image. None: text-to-image.
     init_image: InitImage | None = None
-    # Pose conditioning from a photo (argus-puppet draws its skeleton). None: no ControlNet.
+    # Pose conditioning, from a photo or from keypoints (argus-puppet draws the skeleton). None: no ControlNet.
     pose: PoseInput | None = None
 
     @field_validator("user_prompt")

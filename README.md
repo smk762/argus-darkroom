@@ -29,9 +29,10 @@ safelight :3000 ──▶ argus-darkroom :8106 ──▶ ComfyUI :8188
    before anything reaches ComfyUI. It goes on only if its outcome is `passed`; anything else, a check that could not
    run included, refuses the attempt with `outcome_reason` `input image: <reason>`. The input is never written to disk.
    An inpainting mask is not scanned: it only selects which pixels are repainted (see [Inpainting](#inpainting)).
-   A **pose photo** (`pose`) is an input image too: the same checks, and `pose image: <reason>` when it is refused.
-   Once it has passed, argus-puppet reads its keypoints and draws the skeleton; only that drawing reaches ComfyUI
-   (see [Pose input](#pose-input)).
+   A **pose photo** (`pose.data_base64`) is an input image too: the same checks, and `pose image: <reason>` when it
+   is refused. Once it has passed, argus-puppet reads its keypoints. A pose given as keypoints has no photo and
+   nothing to scan. Either way argus-puppet draws the skeleton, and only that drawing reaches ComfyUI (see
+   [Pose input](#pose-input)).
 4. **Render** through ComfyUI. The image comes back over the websocket and is held in memory only.
 5. **Scan**: per policy, SingGuard judges the image alone and with the prompt. NudeNet scores exposure. If the age check
    is installed, MiVOLO estimates an age per face.
@@ -59,7 +60,8 @@ You need the services darkroom reaches by URL:
 
 - **ComfyUI**, with the `SaveImageWebsocket` node, and for image-to-image, inpainting and pose input the
   `DarkroomLoadImageBase64` and `DarkroomLoadMaskBase64` nodes (below).
-- **argus-puppet**, optional, for [pose input](#pose-input): it reads a pose photo's keypoints and draws the skeleton.
+- **argus-puppet**, optional, for [pose input](#pose-input): it reads a pose photo's keypoints, and draws the
+  skeleton of a pose from a photo or from keypoints.
 - **SingGuard** (agent-composer's `/api/guard/check`). **Required**: darkroom never runs unguarded, and with no
   SingGuard URL (`ARGUS_DARKROOM_SINGGUARD_URL`, or the suite-wide `ARGUS_SINGGUARD_URL`) nothing is generated: the
   server starts closed (see [Without SingGuard](#without-singguard)) and the CLI exits 1.
@@ -220,7 +222,7 @@ by every Argus service on the host (see [Shared settings](#shared-settings-the-s
 | `AGE_URL` | | Curator's `POST /faces?body=true`. Empty: the in-process `[age]` extra; where that cannot run, `ARGUS_CURATOR_URL`; else no age check. |
 | `MINOR_EXPOSED` | `frame` | How the `minor-exposed` rule places exposure: `frame` (any estimate under 18 anywhere in the image) or `overlap` (by box, see [Age check](#age-check-optional)). Any other value refuses to start. |
 | `OLLAMA_URL`, `OLLAMA_MODEL` | | Both set: `expand` is available. Unset, the URL is `ARGUS_OLLAMA_URL`. |
-| `PUPPET_URL` | | argus-puppet, which reads a pose photo and draws its skeleton. Unset: `ARGUS_PUPPET_URL`. Neither: a request with a `pose` input is a 400. |
+| `PUPPET_URL` | | argus-puppet, which reads a pose photo and draws a pose's skeleton. Unset: `ARGUS_PUPPET_URL`. Neither: a request with a `pose` input is a 400. |
 | `POSE_CONTROLNET` | | The ControlNet a pose input uses when the request names none: a file under `MODELS_ROOT`'s `controlnet/` (an OpenPose or union ControlNet for the checkpoint's family). |
 | `POLICY` | `default`, or `adult-granular` with `ALLOW_NSFW` | The enforcing policy when a request names none. |
 | `THINKING` | `cascade` | `fast`, `fast-slow`, `slow`, `cascade`. |
@@ -359,7 +361,7 @@ silent fall back to the unexpanded prompt.
 | `GET /policies` | `default` (the server's enforcing policy) and `policies`, each as `{name, mode, summary, illegal_rules, enforceable, text}`. `mode` is `sfw` or `nsfw`. `illegal_rules` lists only the rules that make an image illegal, as `{code, name}`. `enforceable` is false for an NSFW policy without `ALLOW_NSFW`, and for an SFW policy without NudeNet. `text` is the policy wording sent to SingGuard (`null` for `default`, which uses SingGuard's own rules) |
 | `GET /models` | checkpoints as `{name, family, lora_counts, img2img_lora_counts, inpaint_lora_counts, pose_lora_counts}`, LoRAs, VAEs and ControlNets as `{name}` (`loras`, `vaes`, `controlnets`), `workflows` as `{name, family, loras, mode, img2img, slots}` (`mode` is `txt2img`, `img2img`, `inpaint` or `pose`; `img2img` is true for plain image-to-image only), `default_checkpoint`, `default_pose_controlnet` (null when `POSE_CONTROLNET` is unset or names no file), plus `samplers` and `schedulers` as ComfyUI offers them (empty lists when ComfyUI does not say) |
 | `POST /preflight` | the text check alone. It does not expand: an expansion differs per run, so `expansion_applied` is `false`. An `init_image` or a `pose` photo is not checked here, only during a generation |
-| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way) and then `pose {people, control: {sha256,width,height}}` once its skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
+| `POST /generate/stream` | SSE: `preflight`, `input_scan {policy,context,cell}` (image-to-image and inpainting only, one per input cell, before anything is rendered), `pose_scan {policy,context,cell}` (a pose photo's cells, the same way; none for a pose given as keypoints) and then `pose {people, control: {sha256,width,height}}` once the skeleton is drawn, `queued`, `progress {step,total}`, `scan {policy,context,cell}`, `complete {record}`, `error {detail}`. `X-Argus-Priority` sets the GPU lease class. One at a time and a second gets 409, unless the GPU coordinator is the broker: then it waits for its lease (see [GPU leases](#gpu-leases-argus-iris)) |
 | `GET /records`, `GET /record/{id}` | `/records` takes `page`, `page_size`, `outcome` and `mode` |
 | `GET /image/{id}` | 404 for a deleted, omitted or refused record |
 | `DELETE /record/{id}` | removes the user's own image (and its depth map: `depth` goes back to `null`); the record stays |
@@ -416,45 +418,62 @@ and `guard.input` (the input's `scans`, `nudenet`, `age`, `outcome` and `reason`
 
 ### Pose input
 
-`pose` steers a text-to-image generation into the body pose of a photo, through a pose ControlNet:
+`pose` steers a text-to-image generation into a body pose, through a pose ControlNet. The pose is given one of two
+ways, and exactly one:
+
+- **A photo** (`data_base64`): darkroom **extracts** the pose from it.
+- **Keypoints** (`keypoints`, `width`, `height`): the pose is given directly and darkroom **enforces** it, for
+  example a pose sampled from an argus-puppet library, or one built by a tool.
 
 | `pose` field | |
 |---|---|
-| `data_base64` | The photo: PNG, JPEG or WebP bytes, base64, with `init_image`'s limits. Anything else is a 400 |
+| `data_base64` | A photo to take the pose from: PNG, JPEG or WebP bytes, base64, with `init_image`'s limits. Anything else is a 400 |
+| `keypoints` | The pose itself: one person's 133 `[x, y, score]` points (COCO-WholeBody order, as argus-puppet reports them), or a list of up to 20 people. The first person is the primary one |
+| `width`, `height` | With `keypoints`: the pixel frame they are in, 1 to 65535. A puppet library entry's `keypoints`, `width` and `height` fit as they are |
+| `source_sha256` | With `keypoints`, optional: the sha256 of the image they came from, as the caller states it (a library entry's `source_sha256`). Recorded for tracing; darkroom never sees that image and does not verify it |
 | `controlnet` | optional: a file under the models root's `controlnet/`. Default `POSE_CONTROLNET`; neither is a 400 |
 | `strength` | above 0, up to 2.0, default 0.8. Around 0.6 to 1.0 holds the pose; lower lets the prompt override it |
 | `body`, `hands`, `face` | default true: which parts of the skeleton are drawn (at least one). Turn `face` off if faces come out distorted, `hands` off for a body-only ControlNet |
-| `primary_only` | default false: draw only the photo's primary subject instead of everyone (at most 20 people) |
-| `fit` | `contain` (default: the whole photo frame, letterboxed), `cover` (fills the canvas, edges cropped) or `skeleton` (the figure fitted to the canvas, ignoring the photo's framing) |
+| `primary_only` | default false: draw only the primary subject instead of everyone (at most 20 people) |
+| `fit` | `contain` (default: the whole frame, letterboxed), `cover` (fills the canvas, edges cropped) or `skeleton` (the figure fitted to the canvas, ignoring the frame) |
 
-**The photo is an input image like any other.** After the text pre-flight it gets every check an output gets
+**A photo is an input image like any other.** After the text pre-flight it gets every check an output gets
 (SingGuard alone and with the prompt under every selected policy, NudeNet, the age estimate) and goes on only when its
 outcome is `passed`; anything else refuses the attempt with `pose image: <reason>`, `critical` as the photo's own
-decision says. Until then it has been sent to the guards and nowhere else.
-
-**Only the skeleton is rendered from.** Once the photo has passed, darkroom asks
+decision says. Until then it has been sent to the guards and nowhere else. Once it has passed, darkroom asks
 [argus-puppet](https://github.com/smk762/argus-puppet) for the keypoints of the people in it (`POST /pose`, which
-writes nothing) and then to draw those keypoints as an OpenPose-convention control image at the generation's size
-(`POST /render`, numbers in, PNG out). That drawing is what ComfyUI gets. No pixel of the photo reaches the render,
-and the photo is never written. Darkroom checks what puppet answers before using it: the keypoints must be 133 finite
-points per person in the frame of the photo it sent, and the drawing must be a PNG of exactly the generation's size
-with at most 256 flat colours (a photograph has thousands) and something drawn on it. A photo with nobody in it, a
-puppet that does not answer, or a drawing that fails those checks is a `failed` record (`pose: <why>`) and nothing is
-rendered. The drawing itself is not scanned: it holds joint positions and nothing of the photo's appearance.
+writes nothing); they must be 133 finite points per person in the frame of the photo that was sent. The photo goes
+no further and is never written.
 
-**A request cannot bring its own control image or keypoints.** `pose` accepts a photo and nothing else, so every
-skeleton comes from a picture darkroom checked. A pose from a library (argus-puppet's `library sample`) is sent as
-that pose's source photo. `pose` cannot be combined with `init_image` yet, and needs a `+pose`
+**Keypoints have nothing to scan.** They are numbers, not imagery: there is no photo, so no input scan runs and
+`guard.pose_input` is null. What they can do is place a figure, and the output that results is scanned and decided
+like any other. Darkroom validates them (133 finite points per person, at most 20 people, a stated frame) and does
+not know where they came from: use a library built with argus-puppet's age check for poses taken from real people.
+
+**Only a skeleton drawing is rendered from, either way.** Puppet draws the keypoints as an OpenPose-convention
+control image at the generation's size (`POST /render`, numbers in, PNG out), and that drawing is what ComfyUI gets.
+Darkroom checks it before using it: a PNG of exactly the generation's size, with at most 256 flat colours (a
+photograph has thousands) and something drawn on it. The drawing itself is not scanned: it holds joint positions and
+no appearance. Nobody in a photo, a puppet that does not answer, or a drawing that fails those checks is a `failed`
+record (`pose: <why>`), and nothing is rendered: darkroom never falls back to generating without the pose.
+
+**A request cannot bring its own control image.** Any picture would do as one, and nobody would have checked it, so
+`pose` has no field for it. `pose` cannot be combined with `init_image` yet, and needs a `+pose`
 [template](#workflow-templates) for the checkpoint's family and LoRA count.
 
-The record keeps the photo by its hashes and the skeleton in full, so the run can be reproduced without the photo:
-`request.pose` holds `sha256`, `phash`, `width`, `height` (of the photo as judged) and `source_sha256` (of the bytes
-sent); `controlnet` as `{name, sha256}`; `strength`, `body`, `hands`, `face`, `primary_only`, `fit`; `people`, each
-`{keypoints, primary}` with 133 `(x, y, score)` points in the photo's pixel frame (`layout`:
-`coco_wholebody_133`); `estimator` (puppet's version, its wire version, and its detector and pose model as
-`{name, sha256}`); and `control` (`sha256`, `width`, `height` of the drawing). `guard.pose_input` is the photo's own
-scan, shaped like `guard.input`. On a record refused or failed before puppet answered, `people` is empty and
-`estimator` and `control` are null.
+The record keeps the skeleton in full, so the run can be reproduced: `request.pose` holds `source` (`photo` or
+`keypoints`); `controlnet` as `{name, sha256}`; `strength`, `body`, `hands`, `face`, `primary_only`, `fit`; `people`,
+each `{keypoints, primary}` with 133 `(x, y, score)` points (`layout`: `coco_wholebody_133`); and `control`
+(`sha256`, `width`, `height` of the drawing).
+
+| | `source: "photo"` | `source: "keypoints"` |
+|---|---|---|
+| `sha256`, `phash` | of the photo as judged | null |
+| `width`, `height` | the photo's | the frame the request stated |
+| `source_sha256` | of the bytes sent | what the caller stated, or null; not verified |
+| `people` | what puppet read; empty until it answered | the request's keypoints (the first alone with `primary_only`) |
+| `estimator` | puppet's version, wire version, and its detector and pose model as `{name, sha256}` | null |
+| `guard.pose_input` | the photo's own scan, shaped like `guard.input` | null |
 
 Puppet leases its own GPU for `/pose`, at the caller's `X-Argus-Priority`; darkroom calls it before it asks for the
 render's lease, so no lease is held across the call.

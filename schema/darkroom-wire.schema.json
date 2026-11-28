@@ -967,7 +967,7 @@
       "type": "object"
     },
     "PoseRef": {
-      "description": "A pose input: the identity of the photo the pose came from, never its pixels, and the skeleton read from it.\n\nThe hashes and size are of the photo as darkroom judged it and sent it to argus-puppet: decoded, turned upright,\nmade RGB and re-encoded as a PNG with no metadata. ``source_sha256`` is of the bytes the caller sent. The photo\nreaches no part of ComfyUI: only the skeleton drawn from ``people`` does (``control``).\n\n``people``, ``estimator`` and ``control`` are filled once the photo passed its scan and argus-puppet answered;\non a record refused or failed before that they are empty and null.",
+      "description": "A pose input: where the pose came from, the skeleton, and what was drawn from it. Never a pixel.\n\n``source`` is ``photo`` when darkroom took the pose from a photo it checked. ``sha256``, ``phash``, ``width`` and\n``height`` are then of the photo as darkroom judged it and sent it to argus-puppet (decoded, turned upright, made\nRGB and re-encoded as a PNG with no metadata), ``source_sha256`` is of the bytes the caller sent, and ``people``\nand ``estimator`` are what argus-puppet read from it.\n\n``source`` is ``keypoints`` when the request gave the pose directly. There was no photo: ``sha256`` and ``phash``\nare null, ``width`` and ``height`` are the frame the request stated, ``people`` are the request's keypoints,\n``estimator`` is null, and ``source_sha256`` is the image the caller says they came from, if it said (never seen\nor verified by darkroom).\n\nOnly the skeleton drawn from ``people`` reaches ComfyUI (``control``). For a photo, ``people``, ``estimator`` and\n``control`` are filled once it passed its scan and argus-puppet answered; on a record refused or failed before\nthat they are empty and null.",
       "properties": {
         "body": {
           "default": true,
@@ -1032,8 +1032,16 @@
           "type": "array"
         },
         "phash": {
-          "title": "Phash",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phash"
         },
         "primary_only": {
           "default": false,
@@ -1041,16 +1049,41 @@
           "type": "boolean"
         },
         "sha256": {
-          "description": "lowercase hex SHA256 digest",
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Sha256",
+          "anyOf": [
+            {
+              "description": "lowercase hex SHA256 digest",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        },
+        "source": {
+          "default": "photo",
+          "enum": [
+            "photo",
+            "keypoints"
+          ],
+          "title": "Source",
           "type": "string"
         },
         "source_sha256": {
-          "description": "lowercase hex SHA256 digest",
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Source Sha256",
-          "type": "string"
+          "anyOf": [
+            {
+              "description": "lowercase hex SHA256 digest",
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Sha256"
         },
         "strength": {
           "title": "Strength",
@@ -1063,11 +1096,8 @@
         }
       },
       "required": [
-        "sha256",
-        "phash",
         "width",
         "height",
-        "source_sha256",
         "controlnet",
         "strength"
       ],
