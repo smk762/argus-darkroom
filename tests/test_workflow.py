@@ -50,6 +50,7 @@ def test_the_shipped_examples_load_as_a_set_keyed_by_family_and_lora_count() -> 
         ("sdxl+img2img", "sdxl", 0, "img2img"), ("sdxl+lora1+img2img", "sdxl", 1, "img2img"),
         ("sdxl+inpaint", "sdxl", 0, "inpaint"), ("sdxl+lora1+inpaint", "sdxl", 1, "inpaint"),
         ("sdxl+lora2+inpaint", "sdxl", 2, "inpaint"),
+        ("sdxl+pose", "sdxl", 0, "pose"), ("sdxl+lora1+pose", "sdxl", 1, "pose"),
         ("flux", "flux", 0, "txt2img"), ("flux+lora1", "flux", 1, "txt2img"), ("flux+lora2", "flux", 2, "txt2img"),
         ("flux-klein", "flux-klein", 0, "txt2img"), ("sd35", "sd35", 0, "txt2img"),
     }  # fmt: skip

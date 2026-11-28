@@ -16,7 +16,7 @@ from typing import Annotated, Literal
 
 from argus_cortex.moderation import GuardResult
 from argus_cortex.wire import make_versioned_base, render_schema
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat
 
 # 1.0: initial contract.
 RECORD_VERSION = "1.0"
@@ -30,6 +30,11 @@ Mode = Literal["sfw", "nsfw"]
 CellState = Literal["safe", "flagged", "illegal", "unchecked"]
 # How the minor-exposed rule places exposure: anywhere in the frame, or by box overlap (ARGUS_DARKROOM_MINOR_EXPOSED).
 MinorExposedRule = Literal["frame", "overlap"]
+# The keypoint layout argus-puppet reports: COCO-WholeBody, 133 points (body, feet, face, hands).
+POSE_LAYOUT = "coco_wholebody_133"
+POSE_KEYPOINTS = 133
+# The most people of a pose photo that are drawn and recorded: argus-puppet's own default cap per image.
+MAX_POSE_PEOPLE = 20
 
 _Versioned = make_versioned_base(
     "record_version", RECORD_VERSION, SUPPORTED_RECORD_MAJORS, label="record_version", class_name="_Versioned"
@@ -99,6 +104,74 @@ class InitImageRef(BaseModel):
     mask: MaskRef | None = None
 
 
+class PosePerson(BaseModel):
+    """One person of the pose skeleton: argus-puppet's whole-body keypoints, never pixels."""
+
+    # 133 (x, y, score) points in the pose photo's pixel frame (as judged: upright), in the COCO-WholeBody order.
+    keypoints: list[tuple[FiniteFloat, FiniteFloat, FiniteFloat]] = Field(
+        min_length=POSE_KEYPOINTS, max_length=POSE_KEYPOINTS
+    )
+    # Whether argus-puppet named this person the photo's primary subject.
+    primary: bool = False
+
+
+class PoseEstimatorRef(BaseModel):
+    """What read the keypoints: argus-puppet's version and its two pinned models, as it reported them."""
+
+    package_version: str | None = None
+    # puppet's wire version (``puppet_version``) of the answer the keypoints came in.
+    wire_version: str | None = None
+    detector: ModelRef | None = None
+    pose: ModelRef | None = None
+
+
+class ControlImageRef(BaseModel):
+    """The identity of the skeleton drawing ComfyUI got: the PNG's sha256 (re-encoded with no metadata) and size."""
+
+    sha256: Sha256
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class PoseRef(BaseModel):
+    """A pose input: where the pose came from, the skeleton, and what was drawn from it. Never a pixel.
+
+    ``source`` is ``photo`` when darkroom took the pose from a photo it checked. ``sha256``, ``phash``, ``width`` and
+    ``height`` are then of the photo as darkroom judged it and sent it to argus-puppet (decoded, turned upright, made
+    RGB and re-encoded as a PNG with no metadata), ``source_sha256`` is of the bytes the caller sent, and ``people``
+    and ``estimator`` are what argus-puppet read from it.
+
+    ``source`` is ``keypoints`` when the request gave the pose directly. There was no photo: ``sha256`` and ``phash``
+    are null, ``width`` and ``height`` are the frame the request stated, ``people`` are the request's keypoints,
+    ``estimator`` is null, and ``source_sha256`` is the image the caller says they came from, if it said (never seen
+    or verified by darkroom).
+
+    Only the skeleton drawn from ``people`` reaches ComfyUI (``control``). For a photo, ``people``, ``estimator`` and
+    ``control`` are filled once it passed its scan and argus-puppet answered; on a record refused or failed before
+    that they are empty and null.
+    """
+
+    source: Literal["photo", "keypoints"] = "photo"
+    sha256: Sha256 | None = None
+    phash: str | None = None
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+    source_sha256: Sha256 | None = None
+    controlnet: ModelRef
+    strength: float
+    # What was drawn, and how the pose's frame was fitted to the generation's.
+    body: bool = True
+    hands: bool = True
+    face: bool = True
+    primary_only: bool = False
+    fit: str = "contain"
+    layout: str = POSE_LAYOUT
+    # The people that were drawn: everyone (at most MAX_POSE_PEOPLE), or the primary subject alone.
+    people: list[PosePerson] = Field(default_factory=list)
+    estimator: PoseEstimatorRef | None = None
+    control: ControlImageRef | None = None
+
+
 class RequestRecord(BaseModel):
     """What was asked for. ``final_prompt`` is the exact string ComfyUI receives."""
 
@@ -122,6 +195,8 @@ class RequestRecord(BaseModel):
     engine_version: str | None = None
     # Image-to-image: the input's identity and the denoise it was rendered with. null for text-to-image.
     init_image: InitImageRef | None = None
+    # Pose conditioning: the photo's identity, the ControlNet and the skeleton. null without a pose input.
+    pose: PoseRef | None = None
 
 
 class Cell(BaseModel):
@@ -202,7 +277,8 @@ class AgeRecord(BaseModel):
 
 
 class InputScanRecord(BaseModel):
-    """The image-to-image input's own scan: the same checks an output gets, before anything reaches ComfyUI.
+    """An input image's own scan (the image-to-image input, or a pose photo): the same checks an output gets, before
+    anything reaches ComfyUI or argus-puppet.
 
     The input goes on only when ``outcome`` is ``passed``; anything else refuses the attempt. ``outcome`` and
     ``reason`` are what the outcome table said of the input, as if it were an output.
@@ -229,6 +305,9 @@ class GuardRecord(BaseModel):
     # The image-to-image input's scan. null for text-to-image, and when pre-flight refused before the input was
     # scanned.
     input: InputScanRecord | None = None
+    # The pose photo's scan, the same checks again. null without a pose input, for a pose given as keypoints (there is
+    # no photo to scan), and when pre-flight refused before the photo was scanned.
+    pose_input: InputScanRecord | None = None
 
 
 class ImageRecord(BaseModel):
@@ -266,7 +345,8 @@ class GenerationRecord(_Versioned):  # type: ignore[misc, valid-type]
     darkroom_version: str
     outcome: Outcome
     # Rule codes, "minor-exposed", "unchecked", "sfw-exposed", "sfw-unchecked", or the generation error. A refusal of
-    # an image-to-image input is "input image: " and the input's own reason.
+    # an image-to-image input is "input image: " and the input's own reason; of a pose photo, "pose image: " and its
+    # reason. A pose that could not be read or drawn is a failure: "pose: " and why.
     outcome_reason: str | None = None
     # True for illegal and minor-exposed deletions; false for everything else. Lets non-critical
     # records be pruned first when retention is decided.

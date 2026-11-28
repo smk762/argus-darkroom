@@ -32,7 +32,11 @@ class Rig:
         self.systmp = tmp_path / "systmp"
         self.systmp.mkdir()
         models = tmp_path / "models"
-        for kind, name in [("checkpoints", "base.safetensors"), ("loras", "style.safetensors")]:
+        for kind, name in [
+            ("checkpoints", "base.safetensors"),
+            ("loras", "style.safetensors"),
+            ("controlnet", "openpose.safetensors"),
+        ]:
             (models / kind).mkdir(parents=True, exist_ok=True)
             (models / kind / name).write_bytes(name.encode())
         self.singguard, self.comfyui, self.nudenet = singguard, comfyui, nudenet

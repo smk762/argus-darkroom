@@ -82,7 +82,14 @@ def test_an_empty_singguard_url_builds_no_engine(monkeypatch, tmp_path) -> None:
 def test_health(rig) -> None:
     body = client(rig).get("/health").json()
     # configured and answering; an unconfigured Ollama is simply not up. `age` is whether the age check can run.
-    assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": True, "ollama": False, "age": False}
+    assert body["backends"] == {
+        "comfyui": True,
+        "singguard": True,
+        "nudenet": True,
+        "ollama": False,
+        "puppet": False,
+        "age": False,
+    }
     assert body["default_policy"] == "default" and body["thinking"] == "cascade" and body["generating"] is False
     assert body["nsfw_allowed"] is False and body["devmode"] is False and body["sfw_available"] is True
     assert body["read_only"] is False
@@ -125,7 +132,14 @@ def test_health_is_degraded_not_an_error_when_a_guard_backend_is_down(rig) -> No
     body = response.json()
     assert response.status_code == 200  # callers read the body; a failed dependency is not a failed route
     assert body["status"] == "degraded"
-    assert body["backends"] == {"comfyui": True, "singguard": True, "nudenet": False, "ollama": False, "age": False}
+    assert body["backends"] == {
+        "comfyui": True,
+        "singguard": True,
+        "nudenet": False,
+        "ollama": False,
+        "puppet": False,
+        "age": False,
+    }
     assert body["checks"]["nudenet"]["ok"] is False and body["checks"]["nudenet"]["required"] is True
     assert body["checks"]["age"] == body["checks"]["age"] | {"ok": False, "required": True}
     assert body["checks"]["age"]["detail"] == body["age_unavailable"] == "curator reports faces unavailable"
@@ -203,11 +217,14 @@ def test_models(rig) -> None:
                 "lora_counts": [1],
                 "img2img_lora_counts": [],
                 "inpaint_lora_counts": [],
+                "pose_lora_counts": [],
             }
         ],
         "default_checkpoint": None,  # nothing under sdxl/ in the rig
         "loras": [{"name": "style.safetensors"}],
         "vaes": [],
+        "controlnets": [{"name": "openpose.safetensors"}],
+        "default_pose_controlnet": None,  # ARGUS_DARKROOM_POSE_CONTROLNET is unset
         "workflows": [
             {
                 "name": "sdxl+lora1",
@@ -242,7 +259,7 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         path.write_bytes(name.encode())
     c = client(rig, workflow=EXAMPLES)
     body = c.get("/models").json()
-    per_mode = ("img2img_lora_counts", "inpaint_lora_counts")
+    per_mode = ("img2img_lora_counts", "inpaint_lora_counts", "pose_lora_counts")
     assert [{k: v for k, v in c.items() if k not in per_mode} for c in body["checkpoints"]] == [
         {"name": "base.safetensors", "family": None, "lora_counts": []},  # not in a family folder: cannot render
         {"name": "flux/f.safetensors", "family": "flux", "lora_counts": [0, 1, 2]},
@@ -261,6 +278,8 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+inpaint",
         "sdxl+lora1+inpaint",
         "sdxl+lora2+inpaint",
+        "sdxl+pose",
+        "sdxl+lora1+pose",
         "flux",
         "flux+lora1",
         "flux+lora2",
@@ -275,6 +294,8 @@ def test_models_and_health_report_the_workflow_set(rig) -> None:
         "sdxl+inpaint": ("inpaint", False),
         "sdxl+lora1+inpaint": ("inpaint", False),
         "sdxl+lora2+inpaint": ("inpaint", False),
+        "sdxl+pose": ("pose", False),
+        "sdxl+lora1+pose": ("pose", False),
     }
     assert sorted(c.get("/health").json()["workflows"]) == sorted(by_name)
 

@@ -12,6 +12,11 @@ history after the run.
 An inpainting mask travels the same way and is never written either, but it is not scanned: it only says which
 pixels of the checked input are repainted, and carries no imagery. The output is scanned and decided as usual.
 
+A pose input is a photo or keypoints. A photo gets the input image's checks too; once it has passed, argus-puppet
+reads its keypoints. Keypoints given in the request are numbers, with nothing to scan. Either way argus-puppet draws
+the skeleton (:mod:`argus_darkroom.puppet`); the drawing is what ComfyUI gets, and the photo goes no
+further. Both calls are made before the render's GPU lease is asked for, so no lease is held across them.
+
 The render and the prompt expansion each hold a GPU lease (:mod:`argus_darkroom.gpu`) for as long as ComfyUI or
 Ollama works on them, and go to the URL the lease names, if it names one. The scans hold none: SingGuard, NudeNet and
 curator are tenants of their own.
@@ -38,10 +43,20 @@ from argus_darkroom.comfyui import ComfyUIClient, GenerationError, Progress
 from argus_darkroom.config import Settings
 from argus_darkroom.expansion import ExpansionError, OllamaExpander
 from argus_darkroom.guard import Guard
-from argus_darkroom.images import InputImage, InputMask, UnreadableImage, describe, load_input, load_mask
+from argus_darkroom.images import (
+    ControlImage,
+    InputImage,
+    InputMask,
+    UnreadableImage,
+    describe,
+    load_control,
+    load_input,
+    load_mask,
+)
 from argus_darkroom.modelfiles import ModelLibrary
 from argus_darkroom.models import (
     AgeRecord,
+    ControlImageRef,
     DepthRecord,
     GenerationRecord,
     GuardRecord,
@@ -52,11 +67,16 @@ from argus_darkroom.models import (
     ModelRef,
     NudeNetBox,
     NudeNetRecord,
+    Outcome,
+    PoseEstimatorRef,
+    PosePerson,
+    PoseRef,
     RequestRecord,
 )
 from argus_darkroom.outcome import Decision, decide, minor_exposed
 from argus_darkroom.preflight import PreflightResult, run_preflight
 from argus_darkroom.prompt import assemble_prompt
+from argus_darkroom.puppet import PoseUnavailable, PuppetClient
 from argus_darkroom.request import GenerateRequest, RequestError, check_policies
 from argus_darkroom.scan import Scan, Scanner
 from argus_darkroom.store import RecordStore, new_id
@@ -73,10 +93,13 @@ from argus_darkroom.workflow import (
 
 logger = structlog.get_logger()
 
-# (event kind, JSON-able payload): "preflight", "input_scan", "queued", "progress", "scan", "complete"
+# (event kind, JSON-able payload): "preflight", "input_scan", "pose_scan", "pose", "queued", "progress", "scan",
+# "complete"
 Emit = Callable[[str, dict], None]
 _REASON_MAX = 500
 INPUT_REFUSAL = "input image: "
+POSE_REFUSAL = "pose image: "  # the pose photo did not pass its scan
+POSE_FAILURE = "pose: "  # the photo passed, and its pose could not be read or drawn
 # A run of base64 this long in an error message is a piece of the input image (ComfyUI can echo a node's inputs). The
 # client cuts ComfyUI's error bodies short, so a shorter run that the cut ends is a piece too.
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{100,}={0,2}|[A-Za-z0-9+/]{40,}={0,2}\Z")
@@ -102,6 +125,10 @@ class Prepared:
     denoise: float | None = None
     # Inpainting: the mask, decoded and held in memory only. Never scanned: it carries no imagery.
     mask: InputMask | None = None
+    # Pose: the ControlNet (set for every pose request), and the photo the pose comes from, decoded and held in memory
+    # only (None when the request gave keypoints, which stay in the request).
+    pose: InputImage | None = None
+    controlnet: ModelRef | None = None
 
     @property
     def init_ref(self) -> InitImageRef | None:
@@ -126,6 +153,17 @@ class Prepared:
 
 
 @dataclass(frozen=True)
+class PoseControl:
+    """A pose's skeleton: the people that are drawn (read from a checked photo by argus-puppet, or the request's own
+    keypoints), what read them (None for given keypoints), and the drawing
+    ComfyUI gets. Made only after the photo passed its scan (:meth:`Engine.pose_control`)."""
+
+    people: tuple[PosePerson, ...]
+    estimator: PoseEstimatorRef | None
+    image: ControlImage
+
+
+@dataclass(frozen=True)
 class Rendered:
     """A generated image, held in memory, and the request record that reproduces it."""
 
@@ -146,6 +184,7 @@ class Engine:
         age: AgeEstimator | None = None,
         expander: OllamaExpander | None = None,
         gpu_coordinator: GpuCoordinator | None = None,
+        puppet: PuppetClient | None = None,
     ) -> None:
         self.settings = settings
         self.guard = guard or Guard(settings.singguard_url, settings.thinking)
@@ -170,6 +209,10 @@ class Engine:
         if expander is None and settings.expansion_enabled:
             expander = OllamaExpander(settings.ollama_url, settings.ollama_model)
         self.expander = expander
+        # argus-puppet reads a pose photo and draws its skeleton. None: a request with a pose input is refused.
+        if puppet is None and settings.pose_available:
+            puppet = PuppetClient(settings.puppet_url)
+        self.puppet = puppet
 
     # -- request ----------------------------------------------------------------------------------------
 
@@ -261,6 +304,7 @@ class Engine:
         workflow: Workflow | None = None,
         engine_version: str | None = None,
         init_image: InitImageRef | None = None,
+        pose: PoseRef | None = None,
     ) -> RequestRecord:
         return RequestRecord(
             mode=policy_table.mode(enforcing),
@@ -278,6 +322,7 @@ class Engine:
             workflow=workflow.name if workflow else None,
             engine_version=engine_version,
             init_image=init_image,
+            pose=pose,
         )
 
     def record_refusal(
@@ -286,9 +331,10 @@ class Engine:
         result: PreflightResult,
         expanded_prompt: str | None = None,
         init_image: InitImageRef | None = None,
+        pose: PoseRef | None = None,
     ) -> GenerationRecord:
         """The record of an attempt that pre-flight refused. Nothing was generated, so there is no image. An input
-        image was not scanned either: the record names it by its hashes only."""
+        image or pose photo was not scanned either: the record names it by its hashes only."""
         enforcing, advisory = self.policies(request)
         record = GenerationRecord(
             id=new_id(),
@@ -296,7 +342,7 @@ class Engine:
             outcome="refused",
             outcome_reason=result.reason,
             critical=False,
-            request=self._request_record(request, enforcing, expanded_prompt, init_image=init_image),
+            request=self._request_record(request, enforcing, expanded_prompt, init_image=init_image, pose=pose),
             guard=GuardRecord(
                 enforcing_policy=enforcing,
                 advisory_policies=advisory,
@@ -330,7 +376,38 @@ class Engine:
                     mask = load_mask(request.init_image.mask_base64, (init.record.width, init.record.height))
             except UnreadableImage as exc:
                 raise RequestError(str(exc)) from exc
-        mode: Mode = "txt2img" if init is None else "img2img" if mask is None else "inpaint"
+        pose: InputImage | None = None
+        controlnet: ModelRef | None = None
+        if request.pose is not None:
+            if init is not None:
+                raise RequestError(
+                    "a pose input cannot be combined with an init image: pose conditioning is text-to-image"
+                )
+            if self.puppet is None:
+                raise RequestError(
+                    "a pose input needs argus-puppet to read the pose (ARGUS_DARKROOM_PUPPET_URL or ARGUS_PUPPET_URL)"
+                )
+            name = request.pose.controlnet or self.settings.pose_controlnet
+            if not name:
+                raise RequestError(
+                    "a pose input needs a ControlNet: name one in the request (pose.controlnet) or set "
+                    "ARGUS_DARKROOM_POSE_CONTROLNET"
+                )
+            if request.pose.data_base64 is not None:
+                try:
+                    pose = load_input(request.pose.data_base64, "the pose image")
+                except UnreadableImage as exc:
+                    raise RequestError(str(exc)) from exc
+            controlnet = self.models.ref("controlnet", name)
+        mode: Mode = (
+            "pose"
+            if controlnet is not None
+            else "txt2img"
+            if init is None
+            else "img2img"
+            if mask is None
+            else "inpaint"
+        )
         try:
             workflow = self.workflows.select(request.checkpoint, len(request.loras), mode)
         except WorkflowError as exc:
@@ -344,6 +421,8 @@ class Engine:
             init=init,
             denoise=request.init_image.denoise if request.init_image is not None else None,
             mask=mask,
+            pose=pose,
+            controlnet=controlnet,
         )
         try:  # the template's slots must fit this request: better a 400 now than a failure later
             render(workflow, self._params(request, prepared, ""))
@@ -352,9 +431,17 @@ class Engine:
         return prepared
 
     @staticmethod
-    def _params(request: GenerateRequest, prepared: Prepared, positive: str) -> RenderParams:
+    def _params(
+        request: GenerateRequest, prepared: Prepared, positive: str, control: PoseControl | None = None
+    ) -> RenderParams:
+        """The values that fill the template. Without *control* a pose request's ``$pose_image`` is empty: enough to
+        check the template's slots when the request is prepared, and never sent (:meth:`render` insists on one)."""
         assert request.sampling is not None  # prepare() checked
+        posed = prepared.controlnet is not None and request.pose is not None
         return RenderParams(
+            pose_image=(control.image.base64 if control is not None else "") if posed else None,
+            controlnet=prepared.controlnet.name if posed and prepared.controlnet else None,
+            pose_strength=request.pose.strength if posed and request.pose else None,
             positive=positive,
             negative=request.negative_prompt,
             seed=prepared.seed,
@@ -375,11 +462,15 @@ class Engine:
         prepared: Prepared | None = None,
         input_scan: InputScanRecord | None = None,
         priority: PriorityClass = gpu.DEFAULT_PRIORITY,
+        pose_scan: InputScanRecord | None = None,
+        control: PoseControl | None = None,
     ) -> Rendered:
         """Generate the image for *request* and hold the PNG in memory.
 
         Call it only after pre-flight let the request through, and after an input image passed its scan
-        (:meth:`check_input`). The final prompt is the one that was checked: it is built by :meth:`final_prompt`, the
+        (:meth:`check_input`). A pose request also needs its photo's passed scan (*pose_scan*), if it has a photo, and
+        the skeleton drawn
+        from it (*control*, from :meth:`pose_control`). The final prompt is the one that was checked: it is built by :meth:`final_prompt`, the
         same function pre-flight used.
 
         The render holds a GPU lease on ``comfyui`` at *priority*, waiting for it first, and goes to the ComfyUI the
@@ -394,15 +485,25 @@ class Engine:
             # Not reachable through generate(), which never renders an input that did not pass. A direct caller gets
             # the same rule: an input image reaches ComfyUI only after its own scan passed.
             raise RequestError("an input image is rendered only after its scan passed (Engine.check_input)")
+        photo_unchecked = prepared.pose is not None and (pose_scan is None or pose_scan.outcome != "passed")
+        if prepared.controlnet is not None and (photo_unchecked or control is None):
+            # The same rule for a pose photo: nothing is drawn from one that did not pass, and nothing is rendered
+            # without the drawing.
+            raise RequestError(
+                "a pose is rendered only after its photo's scan passed and its skeleton was drawn "
+                "(Engine.check_input, Engine.pose_control)"
+            )
 
-        graph = render(workflow, self._params(request, prepared, self.final_prompt(request, expanded_prompt)))
+        graph = render(workflow, self._params(request, prepared, self.final_prompt(request, expanded_prompt), control))
         with self._comfyui_lease(gpu.GENERATE, workflow.name, priority) as comfyui:
             self._verify_outputs(workflow, comfyui)
             result = comfyui.render(graph, workflow.save_node_id, on_progress)
             engine_version = comfyui.engine_version()
         return Rendered(
             image=result.image,
-            request=self._prepared_record(request, enforcing, expanded_prompt, prepared, engine_version=engine_version),
+            request=self._prepared_record(
+                request, enforcing, expanded_prompt, prepared, engine_version=engine_version, control=control
+            ),
         )
 
     # -- GPU leases -------------------------------------------------------------------------------------
@@ -469,6 +570,7 @@ class Engine:
         expanded_prompt: str | None,
         prepared: Prepared,
         engine_version: str | None = None,
+        control: PoseControl | None = None,
     ) -> RequestRecord:
         return self._request_record(
             request,
@@ -481,6 +583,49 @@ class Engine:
             workflow=prepared.workflow,
             engine_version=engine_version,
             init_image=prepared.init_ref,
+            pose=self._pose_ref(request, prepared, control),
+        )
+
+    @staticmethod
+    def _pose_ref(request: GenerateRequest, prepared: Prepared, control: PoseControl | None = None) -> PoseRef | None:
+        """The record's pose: a photo by its hashes or the request's keypoints, and the drawing once *control* exists."""
+        if prepared.controlnet is None or request.pose is None:
+            return None
+        asked = request.pose
+        drawn = {
+            "controlnet": prepared.controlnet,
+            "strength": asked.strength,
+            "body": asked.body,
+            "hands": asked.hands,
+            "face": asked.face,
+            "primary_only": asked.primary_only,
+            "fit": asked.fit,
+            "control": None
+            if control is None
+            else ControlImageRef(sha256=control.image.sha256, width=control.image.width, height=control.image.height),
+        }
+        if prepared.pose is None:  # keypoints: they are the request's own, known before anything is drawn
+            assert asked.width is not None and asked.height is not None  # PoseInput checked
+            people = asked.people()
+            return PoseRef(
+                source="keypoints",
+                width=asked.width,
+                height=asked.height,
+                source_sha256=asked.source_sha256,
+                people=list(people[:1] if asked.primary_only else people),
+                **drawn,
+            )
+        photo = prepared.pose.record
+        return PoseRef(
+            source="photo",
+            sha256=photo.sha256,
+            phash=photo.phash,
+            width=photo.width,
+            height=photo.height,
+            source_sha256=prepared.pose.source_sha256,
+            people=list(control.people) if control is not None else [],
+            estimator=control.estimator if control is not None else None,
+            **drawn,
         )
 
     def _verify_outputs(self, workflow: Workflow, comfyui: ComfyUIClient) -> None:
@@ -596,6 +741,43 @@ class Engine:
             decision,
         )
 
+    # -- the pose ---------------------------------------------------------------------------------------
+
+    def pose_control(
+        self, request: GenerateRequest, prepared: Prepared, priority: PriorityClass = gpu.DEFAULT_PRIORITY
+    ) -> PoseControl:
+        """The skeleton a pose request renders from, drawn by argus-puppet at the generation's size.
+
+        For a photo, call it only after the photo passed its scan (:meth:`check_input`): puppet first reads the
+        people's keypoints from it, and this is the first time the photo leaves darkroom for anything but a guard.
+        Given keypoints are drawn as they are. Only keypoints go into the drawing, and what comes back is checked to
+        be a drawing (``images.load_control``), so the ControlNet never sees a picture.
+
+        Raises :class:`PoseUnavailable` (puppet did not answer usefully, or found nobody) or :class:`UnreadableImage`
+        (what it drew is not a skeleton of the generation's size).
+        """
+        assert prepared.controlnet is not None and request.pose is not None and request.sampling is not None
+        if self.puppet is None:
+            raise PoseUnavailable("argus-puppet is not configured")
+        asked = request.pose
+        estimator: PoseEstimatorRef | None = None
+        if prepared.pose is not None:
+            photo = prepared.pose.record
+            frame = (photo.width, photo.height)
+            read = self.puppet.read(prepared.pose.png, frame, priority)
+            people, estimator = read.drawn(asked.primary_only), read.estimator
+            if not people:
+                raise PoseUnavailable("argus-puppet found nobody in the pose image")
+        else:
+            assert asked.width is not None and asked.height is not None  # PoseInput checked
+            frame = (asked.width, asked.height)
+            people = asked.people()[:1] if asked.primary_only else asked.people()
+        canvas = (request.sampling.width, request.sampling.height)
+        drawing = self.puppet.draw(
+            people, frame, canvas, body=asked.body, hands=asked.hands, face=asked.face, fit=asked.fit
+        )
+        return PoseControl(people=people, estimator=estimator, image=load_control(drawing, canvas))
+
     # -- the whole flow ---------------------------------------------------------------------------------
 
     def generate(
@@ -605,6 +787,8 @@ class Engine:
 
         1. pre-flight (text only): a refusal is recorded and nothing is generated;
         2. image-to-image only: the input image is scanned like an output, and anything but ``passed`` refuses;
+           a pose photo likewise, and then argus-puppet reads and draws its skeleton (a failure there is a
+           ``failed`` record);
         3. render: the image is held in memory only (a ComfyUI failure is a ``failed`` record);
         4. scan, decide;
         5. release (write, for passed and review) or destroy (write nothing).
@@ -671,7 +855,7 @@ class Engine:
         pre = self.preflight(request, expanded)
         send("preflight", self.preflight_view(request, pre, expanded))
         if pre.refused:
-            record = self.record_refusal(request, pre, expanded, prepared.init_ref)
+            record = self.record_refusal(request, pre, expanded, prepared.init_ref, self._pose_ref(request, prepared))
             send("complete", {"record": record.model_dump(mode="json")})
             return record
 
@@ -705,6 +889,58 @@ class Engine:
                 )
                 send("complete", {"record": record.model_dump(mode="json")})
                 return record
+
+        # A pose photo is an input image too: the same checks, before it reaches argus-puppet or anything else, and
+        # only `passed` goes on; then puppet reads the people's keypoints. A pose given as keypoints has no photo and
+        # nothing to scan. Either way puppet draws the keypoints, and the drawing is all ComfyUI gets. Nothing is
+        # written.
+        control: PoseControl | None = None
+        if prepared.controlnet is not None:
+            failure: str | None = None
+            outcome: Outcome = "failed"
+            critical = False
+            if prepared.pose is not None:
+                guard_record.pose_input, verdict = self.check_input(
+                    request,
+                    prepared.pose,
+                    pre.framed,
+                    on_cell=lambda policy, context, cell: send(
+                        "pose_scan", {"policy": policy, "context": context, "cell": cell}
+                    ),
+                )
+                if verdict.outcome != "passed":
+                    outcome, critical = "refused", verdict.critical
+                    failure = POSE_REFUSAL + (verdict.reason or verdict.outcome)
+            if failure is None:
+                try:
+                    control = self.pose_control(request, prepared, priority)
+                except (PoseUnavailable, UnreadableImage) as exc:
+                    failure = POSE_FAILURE + str(exc)
+            if failure is not None or control is None:
+                record = self._save(
+                    GenerationRecord(
+                        id=record_id,
+                        darkroom_version=__version__,
+                        outcome=outcome,
+                        outcome_reason=_scrub(failure or POSE_FAILURE + "no skeleton")[:_REASON_MAX],
+                        critical=critical,
+                        request=self._prepared_record(request, enforcing, expanded, prepared),
+                        guard=guard_record,
+                    )
+                )
+                send("complete", {"record": record.model_dump(mode="json")})
+                return record
+            send(
+                "pose",
+                {
+                    "people": len(control.people),
+                    "control": {
+                        "sha256": control.image.sha256,
+                        "width": control.image.width,
+                        "height": control.image.height,
+                    },
+                },
+            )
         try:
             send("queued", {})
             rendered = self.render(
@@ -714,6 +950,8 @@ class Engine:
                 prepared,
                 guard_record.input,
                 priority,
+                guard_record.pose_input,
+                control,
             )
             image = describe(rendered.image)
         except (GenerationError, UnreadableImage) as exc:
@@ -723,7 +961,7 @@ class Engine:
                     darkroom_version=__version__,
                     outcome="failed",
                     outcome_reason=_scrub(str(exc))[:_REASON_MAX],
-                    request=self._prepared_record(request, enforcing, expanded, prepared),
+                    request=self._prepared_record(request, enforcing, expanded, prepared, control=control),
                     guard=guard_record,
                 )
             )

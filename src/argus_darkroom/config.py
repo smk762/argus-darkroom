@@ -1,6 +1,6 @@
 """Server and engine configuration from ``ARGUS_DARKROOM_*`` environment variables.
 
-The URL of another service (SingGuard, NudeNet, ComfyUI, Ollama, curator) is found with ``argus_cortex.peers``:
+The URL of another service (SingGuard, NudeNet, ComfyUI, Ollama, curator, puppet) is found with ``argus_cortex.peers``:
 darkroom's own variable first, then the suite-wide ``ARGUS_<PEER>_URL``, each from the environment and then the suite
 file. A URL that is set but malformed is a :class:`ConfigError`, never "not configured": a typo must not turn a
 check off.
@@ -97,6 +97,10 @@ class Settings:
     # The suite-wide curator (ARGUS_CURATOR_URL), used for the age check only when age_url is empty and the in-process
     # extra cannot run: it can turn the check on, never replace an estimator that works.
     age_fallback_url: str = ""
+    # argus-puppet, which reads a pose photo's keypoints and draws the skeleton; empty: pose input is unavailable
+    puppet_url: str = ""
+    # The ControlNet a pose input uses when the request names none: a file under the models root's controlnet/.
+    pose_controlnet: str = ""
     # frame: any age estimate under 18 plus exposure anywhere; overlap: exposure placed on a young person's box
     minor_exposed: MinorExposedRule = "frame"
     policy: str = "default"
@@ -124,6 +128,11 @@ class Settings:
     @property
     def expansion_enabled(self) -> bool:
         return bool(self.ollama_url.strip() and self.ollama_model.strip())
+
+    @property
+    def pose_available(self) -> bool:
+        """A pose input needs argus-puppet to read the photo and draw the skeleton."""
+        return bool(self.puppet_url.strip())
 
     @property
     def sfw_available(self) -> bool:
@@ -186,6 +195,7 @@ class Settings:
             raise ConfigError(f"{PREFIX}COMFYUI_URL is off: darkroom renders through ComfyUI")
         nudenet_url, ollama_url = peer("nudenet", "NUDENET_URL")[0], peer("ollama", "OLLAMA_URL")[0]
         curator_url, own_age_url = peer("curator", "AGE_URL")
+        puppet_url = peer("puppet", "PUPPET_URL")[0]
         if unguarded:
             # The rest was read so that a second mistake is reported now, not after the first is fixed. None of the
             # backend URLs is kept.
@@ -209,6 +219,8 @@ class Settings:
             nudenet_url=nudenet_url,
             age_url=curator_url if own_age_url else "",
             age_fallback_url="" if own_age_url else curator_url,
+            puppet_url=puppet_url,
+            pose_controlnet=get("POSE_CONTROLNET"),
             minor_exposed=minor_exposed,
             policy=policy,
             thinking=thinking,

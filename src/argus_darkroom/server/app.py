@@ -4,9 +4,10 @@
 ``GET /health``           cortex's ``ServiceHealth`` (status, checks) and darkroom's own fields: which backends
                           answer, the policy list, ``nsfw_allowed``, ``devmode``, ``read_only``; ``?checks=0`` probes none
 ``GET /policies``         names, the enforcing default, each policy's illegal rules and wording
-``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, workflows, ``default_checkpoint``
+``GET /models``           checkpoints (with family and LoRA counts), LoRAs, VAEs, ControlNets, workflows, defaults
 ``POST /preflight``       the text check alone, so a form can show a verdict before Generate
-``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``queued``, ``progress``, ``scan``, ``complete``.
+``POST /generate/stream`` SSE: ``preflight``, ``input_scan``, ``pose_scan``, ``pose``, ``queued``, ``progress``,
+                          ``scan``, ``complete``.
                           ``X-Argus-Priority`` picks the GPU lease class (``interactive`` by default)
 ``GET /records``          paged, filterable by outcome; ``GET /record/{id}``
 ``GET /image/{id}``       ids only, no path input; 404 with the record id when there is no stored image
@@ -97,7 +98,7 @@ class _Probes:
     """What the health checks last found, for the fields darkroom's ``/health`` has always carried."""
 
     def __init__(self, age: AgeStatus) -> None:
-        self.up = dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama"), False)
+        self.up = dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama", "puppet"), False)
         self.age = age
         self.detector: str | None = None
 
@@ -376,7 +377,7 @@ def unguarded_app(cfg: Unguarded) -> FastAPI:
     def health_fields() -> dict:
         # Every field the guarded /health has, so a client that reads one finds it: nothing answers, nothing can run.
         return {
-            "backends": dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama", "age"), False),
+            "backends": dict.fromkeys(("comfyui", "singguard", "nudenet", "ollama", "puppet", "age"), False),
             "age_unavailable": GUARD_UNCONFIGURED,
             "minor_exposed": cfg.minor_exposed,
             "policies": list(policy_table.POLICIES),
@@ -384,6 +385,7 @@ def unguarded_app(cfg: Unguarded) -> FastAPI:
             "thinking": cfg.thinking,
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": False,
+            "pose_available": False,
             "nudenet_detector": None,
             "expansion_enabled": False,
             "workflow_loaded": False,
@@ -488,6 +490,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
     def check_ollama() -> bool:
         return last.done("ollama", probe(cfg.ollama_url))
 
+    def check_puppet() -> bool:
+        return last.done("puppet", probe(cfg.puppet_url.rstrip("/") + "/health?checks=0"))
+
     def check_age(base_url: str) -> DependencyCheck:
         # Re-probe the estimator the engine actually uses; the boot status is stale.
         last.age = remote_age_status(base_url)
@@ -498,6 +503,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         checks["nudenet"] = check_nudenet
     if cfg.ollama_url:
         checks["ollama"] = check_ollama
+    if cfg.puppet_url:
+        checks["puppet"] = check_puppet
     if remote_age is not None:
         checks["age"] = functools.partial(check_age, remote_age.base_url)
 
@@ -514,6 +521,8 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
             "thinking": cfg.thinking,
             "nsfw_allowed": cfg.allow_nsfw,
             "sfw_available": cfg.sfw_available,
+            # Whether a request may carry a pose input: argus-puppet is configured (`backends.puppet`: it answers).
+            "pose_available": cfg.pose_available,
             # The NudeNet detector the server reports ("640m", "320n"), or null when it does not say or is unreachable.
             "nudenet_detector": last.detector,
             "expansion_enabled": cfg.expansion_enabled,
@@ -535,8 +544,9 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         version=__version__,
         wire={"record_version": RECORD_VERSION},
         checks=checks,
-        # Expansion is optional: a request that asks for it without Ollama is refused, and nothing else changes.
-        informational={"ollama"} & checks.keys(),
+        # Expansion and pose input are optional: a request that asks for one without its backend is refused or fails,
+        # and nothing else changes.
+        informational={"ollama", "puppet"} & checks.keys(),
         read_only=cfg.read_only,
         extra=health_fields,
         check_ttl_s=0,
@@ -571,10 +581,12 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
         workflows = engine.workflows
         try:
             checkpoints = engine.models.names("checkpoint")
+            controlnets = engine.models.names("controlnet")
             found = {
                 # lora_counts: the LoRA counts a workflow renders this checkpoint with. Empty: it cannot be rendered.
                 # img2img_lora_counts: the same for image-to-image. Empty: it takes no input image.
                 # inpaint_lora_counts: the same for inpainting (an input image with a mask). Empty: it takes no mask.
+                # pose_lora_counts: the same with a pose input (a pose ControlNet). Empty: it takes no pose.
                 "checkpoints": [
                     {
                         "name": n,
@@ -582,12 +594,17 @@ def create_app(engine: Engine | None = None, settings: Settings | None = None) -
                         "lora_counts": workflows.lora_counts(n) if workflows else [],
                         "img2img_lora_counts": workflows.lora_counts(n, "img2img") if workflows else [],
                         "inpaint_lora_counts": workflows.lora_counts(n, "inpaint") if workflows else [],
+                        "pose_lora_counts": workflows.lora_counts(n, "pose") if workflows else [],
                     }
                     for n in checkpoints
                 ],
                 "default_checkpoint": pick_default(checkpoints, cfg.default_checkpoint),
                 "loras": [{"name": n} for n in engine.models.names("lora")],
                 "vaes": [{"name": n} for n in engine.models.names("vae")],
+                # ControlNet files (the models root's controlnet/ folder), for a pose input; the one used when a
+                # request names none, or null when ARGUS_DARKROOM_POSE_CONTROLNET is unset or matches nothing.
+                "controlnets": [{"name": n} for n in controlnets],
+                "default_pose_controlnet": cfg.pose_controlnet if cfg.pose_controlnet in controlnets else None,
                 "workflows": [w.describe() for w in workflows.workflows] if workflows else [],
             }
         except RequestError as exc:
